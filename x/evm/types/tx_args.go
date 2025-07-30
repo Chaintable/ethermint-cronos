@@ -135,11 +135,10 @@ func (args *TransactionArgs) ToMessage(globalGasCap uint64, baseFee *big.Int) (*
 
 	// Set sender address or use zero address if none specified.
 	addr := args.GetFrom()
-	// Ethereum block size is ~36000000, we limit this value to protect against DOS
-	MaxGasCap := uint64(100000000)
-	// Set default gas & gas price if none were set
-	gas := MaxGasCap
-	if args.Gas != nil && uint64(*args.Gas) < MaxGasCap {
+	// Ethereum block size is ~36000000, we use this value as default in case neither gas or global cap is specified, to protect against DOS
+	defaultGas := uint64(100000000)
+	gas := defaultGas
+	if args.Gas != nil {
 		gas = uint64(*args.Gas)
 	}
 	if globalGasCap != 0 && globalGasCap < gas {

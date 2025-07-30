@@ -487,6 +487,7 @@ func NewEthermintApp(
 		tracer,
 		evmSs,
 		nil,
+		cast.ToUint64(appOpts.Get(server.FlagQueryGasLimit)),
 	)
 
 	// register the proposal types

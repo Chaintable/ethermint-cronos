@@ -577,7 +577,7 @@ func (suite *GRPCServerTestSuiteSuite) TestQueryValidatorAccount() {
 }
 
 func (suite *GRPCServerTestSuiteSuite) TestEstimateGas() {
-	gasHelper := hexutil.Uint64(20000)
+	gasHelper := hexutil.Uint64(22000)
 	higherGas := hexutil.Uint64(25000)
 	hexBigInt := hexutil.Big(*big.NewInt(1))
 
