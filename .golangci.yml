@@ -62,6 +62,7 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      - x/evm/types/preinstall.go
 issues:
   max-same-issues: 50
 formatters:

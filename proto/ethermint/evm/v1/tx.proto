@@ -1,6 +1,7 @@
 syntax = "proto3";
 package ethermint.evm.v1;
 
+import "amino/amino.proto";
 import "cosmos/msg/v1/msg.proto";
 import "cosmos_proto/cosmos.proto";
 import "gogoproto/gogo.proto";
@@ -9,6 +10,7 @@ import "google/protobuf/any.proto";
 import "ethermint/evm/v1/access_tuple.proto";
 import "ethermint/evm/v1/log.proto";
 import "ethermint/evm/v1/params.proto";
+import "ethermint/evm/v1/preinstall.proto";
 import "ethermint/evm/v1/set_code_authorization.proto";
 
 option go_package = "github.com/evmos/ethermint/x/evm/types";
@@ -23,6 +25,10 @@ service Msg {
   // UpdateParams defined a governance operation for updating the x/evm module parameters.
   // The authority is hard-coded to the Cosmos SDK x/gov module account
   rpc UpdateParams(MsgUpdateParams) returns (MsgUpdateParamsResponse);
+
+  // UpdateParams defined a governance operation for updating the x/evm module parameters.
+  // The authority is hard-coded to the Cosmos SDK x/gov module account
+  rpc RegisterPreinstalls(MsgRegisterPreinstalls) returns (MsgRegisterPreinstallsResponse);
 }
 
 // MsgEthereumTx encapsulates an Ethereum transaction as an SDK message.
@@ -225,3 +231,19 @@ message MsgUpdateParams {
 // MsgUpdateParamsResponse defines the response structure for executing a
 // MsgUpdateParams message.
 message MsgUpdateParamsResponse {}
+
+// MsgRegisterPreinstalls defines a Msg for creating preinstalls in evm state.
+message MsgRegisterPreinstalls {
+  option (cosmos.msg.v1.signer) = "authority";
+
+  // authority is the address of the governance account.
+  string authority = 1 [ (cosmos_proto.scalar) = "cosmos.AddressString" ];
+
+  // preinstalls defines the preinstalls to create.
+  repeated Preinstall preinstalls = 2
+  [ (gogoproto.nullable) = false, (amino.dont_omitempty) = true ];
+}
+
+// MsgRegisterPreinstallsResponse defines the response structure for executing a
+// MsgRegisterPreinstalls message.
+message MsgRegisterPreinstallsResponse {}

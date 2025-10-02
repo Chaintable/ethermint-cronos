@@ -104,28 +104,29 @@ func (suite *KeeperTestSuite) TestBaseFee() {
 func (suite *KeeperTestSuite) TestGetAccountStorage() {
 	testCases := []struct {
 		name     string
-		malleate func()
-		expRes   []int
+		malleate func() common.Address
 	}{
 		{
 			"Only one account that's not a contract (no storage)",
-			func() {},
-			[]int{0},
+			nil,
 		},
 		{
 			"Two accounts - one contract (with storage), one wallet",
-			func() {
+			func() common.Address {
 				supply := big.NewInt(100)
-				suite.DeployTestContract(suite.T(), suite.Address, supply, suite.enableFeemarket)
+				contractAddr := suite.DeployTestContract(suite.T(), suite.Address, supply, suite.enableFeemarket)
+				return contractAddr
 			},
-			[]int{2, 0},
 		},
 	}
 
 	for _, tc := range testCases {
 		suite.Run(tc.name, func() {
 			suite.SetupTest()
-			tc.malleate()
+			var contractAddr common.Address
+			if tc.malleate != nil {
+				contractAddr = tc.malleate()
+			}
 			i := 0
 			suite.App.AccountKeeper.IterateAccounts(suite.Ctx, func(account sdk.AccountI) bool {
 				ethAccount, ok := account.(ethermint.EthAccountI)
@@ -137,7 +138,17 @@ func (suite *KeeperTestSuite) TestGetAccountStorage() {
 				addr := ethAccount.EthAddress()
 				storage := suite.App.EvmKeeper.GetAccountStorage(suite.Ctx, addr)
 
-				suite.Require().Equal(tc.expRes[i], len(storage))
+				if addr == contractAddr {
+					s.Require().NotEqual(0, len(storage),
+						"expected account %d to have non-zero amount of storage slots, got %d",
+						i, len(storage),
+					)
+				} else {
+					s.Require().Len(storage, 0,
+						"expected account %d to have %d storage slots, got %d",
+						i, 0, len(storage),
+					)
+				}
 				i++
 				return false
 			})

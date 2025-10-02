@@ -38,7 +38,8 @@ var (
 
 const (
 	// Amino names
-	updateParamsName = "ethermint/MsgUpdateParams"
+	updateParamsName        = "ethermint/MsgUpdateParams"
+	registerPreinstallsName = "ethermint/MsgRegisterPreinstalls"
 )
 
 // NOTE: This is required for the GetSignBytes function
@@ -61,6 +62,7 @@ func RegisterInterfaces(registry codectypes.InterfaceRegistry) {
 		(*sdk.Msg)(nil),
 		&MsgEthereumTx{},
 		&MsgUpdateParams{},
+		&MsgRegisterPreinstalls{},
 	)
 	registry.RegisterInterface(
 		"ethermint.evm.v1.TxData",
@@ -109,4 +111,5 @@ func UnpackTxData(codecAny *codectypes.Any) (TxData, error) {
 // RegisterLegacyAminoCodec required for EIP-712
 func RegisterLegacyAminoCodec(cdc *codec.LegacyAmino) {
 	cdc.RegisterConcrete(&MsgUpdateParams{}, updateParamsName, nil)
+	cdc.RegisterConcrete(&MsgRegisterPreinstalls{}, registerPreinstallsName, nil)
 }

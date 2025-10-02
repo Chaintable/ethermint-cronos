@@ -1,7 +1,9 @@
 syntax = "proto3";
 package ethermint.evm.v1;
 
+import "amino/amino.proto";
 import "ethermint/evm/v1/params.proto";
+import "ethermint/evm/v1/preinstall.proto";
 import "ethermint/evm/v1/state.proto";
 import "gogoproto/gogo.proto";
 
@@ -13,6 +15,9 @@ message GenesisState {
   repeated GenesisAccount accounts = 1 [(gogoproto.nullable) = false];
   // params defines all the parameters of the module.
   Params params = 2 [(gogoproto.nullable) = false];
+  // preinstalls defines a set of predefined contracts
+  repeated Preinstall preinstalls = 3
+  [ (gogoproto.nullable) = false, (amino.dont_omitempty) = true ];
 }
 
 // GenesisAccount defines an account to be initialized in the genesis state.

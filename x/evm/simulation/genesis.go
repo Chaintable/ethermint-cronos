@@ -49,7 +49,7 @@ func RandomizedGenState(simState *module.SimulationState) {
 	)
 
 	params := types.NewParams(types.DefaultEVMDenom, false, true, true, types.DefaultChainConfig(), extraEIPs)
-	evmGenesis := types.NewGenesisState(params, []types.GenesisAccount{})
+	evmGenesis := types.NewGenesisState(params, []types.GenesisAccount{}, []types.Preinstall{})
 
 	bz, err := json.MarshalIndent(evmGenesis, "", " ")
 	if err != nil {

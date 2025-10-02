@@ -46,6 +46,7 @@ var (
 	_ sdk.Tx     = &MsgEthereumTx{}
 	_ ante.GasTx = &MsgEthereumTx{}
 	_ sdk.Msg    = &MsgUpdateParams{}
+	_ sdk.Msg    = &MsgRegisterPreinstalls{}
 
 	_ codectypes.UnpackInterfacesMessage = MsgEthereumTx{}
 )
@@ -402,4 +403,19 @@ func (m *MsgUpdateParams) ValidateBasic() error {
 	}
 
 	return m.Params.Validate()
+}
+
+// ValidateBasic does a sanity check for MsgRegisterPreinstalls
+func (m *MsgRegisterPreinstalls) ValidateBasic() error {
+	if _, err := sdk.AccAddressFromBech32(m.Authority); err != nil {
+		return errorsmod.Wrap(err, "invalid authority address")
+	}
+
+	for _, p := range m.Preinstalls {
+		err := p.Validate()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }

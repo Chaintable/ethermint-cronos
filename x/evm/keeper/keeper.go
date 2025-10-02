@@ -18,6 +18,8 @@ package keeper
 import (
 	"math/big"
 
+	"github.com/ethereum/go-ethereum/crypto"
+
 	errorsmod "cosmossdk.io/errors"
 	"cosmossdk.io/log"
 	storetypes "cosmossdk.io/store/types"
@@ -338,4 +340,69 @@ func (k Keeper) GetHeaderHash(ctx sdk.Context, height uint64) []byte {
 func (k Keeper) DeleteHeaderHash(ctx sdk.Context, height uint64) {
 	store := ctx.KVStore(k.storeKey)
 	store.Delete(types.GetHeaderHashKey(height))
+}
+
+func (k *Keeper) AddPreinstalls(ctx sdk.Context, preinstalls []types.Preinstall) error {
+	for _, preinstall := range preinstalls {
+		address := common.HexToAddress(preinstall.Address)
+		accAddress := sdk.AccAddress(address.Bytes())
+
+		if len(preinstall.Code) == 0 {
+			return errorsmod.Wrapf(types.ErrInvalidPreinstall,
+				"preinstall %s, address %s has no code", preinstall.Name, preinstall.Address)
+		}
+
+		// check that the address does not conflict with the precompiles
+		cfg, err := k.EVMBlockConfig(ctx, k.ChainID())
+		if err != nil {
+			return err
+		}
+		for _, fn := range k.customContractFns {
+			c := fn(ctx, cfg.Rules)
+			if address == c.Address() {
+				return errorsmod.Wrapf(types.ErrInvalidPreinstall,
+					"preinstall %s, address %s already exists as a precompile", preinstall.Name, preinstall.Address)
+			}
+		}
+
+		codeHash := crypto.Keccak256Hash(common.FromHex(preinstall.Code))
+		codeHashBytes := codeHash.Bytes()
+		if types.IsEmptyCodeHash(codeHashBytes) {
+			k.Logger(ctx).Error("preinstall has empty code hash",
+				"preinstall address", preinstall.Address)
+			return errorsmod.Wrapf(types.ErrInvalidPreinstall,
+				"preinstall %s, address %s has empty code hash", preinstall.Name, preinstall.Address)
+		}
+
+		acct := k.accountKeeper.GetAccount(ctx, accAddress)
+		// check that the account is not already set
+		if acct != nil {
+			return errorsmod.Wrapf(types.ErrInvalidPreinstall,
+				"preinstall %s, address %s already has an account in account keeper", preinstall.Name, preinstall.Address)
+		}
+		// create account with the account keeper and set code hash
+		acct = k.accountKeeper.NewAccountWithAddress(ctx, accAddress)
+		if ethAcct, ok := acct.(ethermint.EthAccountI); ok {
+			if err := ethAcct.SetCodeHash(codeHash); err != nil {
+				return err
+			}
+		}
+		k.accountKeeper.SetAccount(ctx, acct)
+		k.SetCode(ctx, codeHashBytes, common.FromHex(preinstall.Code))
+
+		// We are not setting any storage for preinstalls, so we skip that step.
+	}
+	return nil
+}
+
+// GetCodeHash loads the code hash from the database for the given contract address.
+func (k *Keeper) GetCodeHash(acct sdk.AccountI) common.Hash {
+	if ethAcct, ok := acct.(ethermint.EthAccountI); ok {
+		hash := ethAcct.GetCodeHash()
+		if len(hash.Bytes()) == 0 {
+			return common.BytesToHash(types.EmptyCodeHash)
+		}
+		return hash
+	}
+	return common.BytesToHash(types.EmptyCodeHash)
 }

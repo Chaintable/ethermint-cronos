@@ -191,8 +191,6 @@ var (
 	_ evmserver.AppWithPendingTxListener = (*EthermintApp)(nil)
 )
 
-type GenesisState map[string]json.RawMessage
-
 // var _ server.Application (*EthermintApp)(nil)
 
 // EthermintApp implements an extended ABCI application. It is an application
@@ -926,7 +924,11 @@ func (app *EthermintApp) InterfaceRegistry() types.InterfaceRegistry {
 
 // DefaultGenesis returns a default genesis from the registered AppModuleBasic's.
 func (app *EthermintApp) DefaultGenesis() map[string]json.RawMessage {
-	return app.BasicModuleManager.DefaultGenesis(app.appCodec)
+	genesis := app.BasicModuleManager.DefaultGenesis(app.appCodec)
+	evmGenState := NewEVMGenesisState()
+	genesis[evmtypes.ModuleName] = app.appCodec.MustMarshalJSON(evmGenState)
+
+	return genesis
 }
 
 func (app *EthermintApp) TxConfig() client.TxConfig {

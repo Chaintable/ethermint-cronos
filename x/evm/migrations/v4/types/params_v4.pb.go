@@ -6,11 +6,12 @@ package types
 import (
 	fmt "fmt"
 	_ "github.com/cosmos/gogoproto/gogoproto"
-	proto "github.com/cosmos/gogoproto/proto"
 	v0types "github.com/evmos/ethermint/x/evm/migrations/v0/types"
+	proto "github.com/cosmos/gogoproto/proto"
 	io "io"
 	math "math"
 	math_bits "math/bits"
+
 )
 
 // Reference imports to suppress errors if they are not otherwise used.

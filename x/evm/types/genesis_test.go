@@ -117,7 +117,7 @@ func (suite *GenesisTestSuite) TestValidateGenesis() {
 		},
 		{
 			name:     "copied genesis",
-			genState: NewGenesisState(DefaultGenesisState().Params, DefaultGenesisState().Accounts),
+			genState: NewGenesisState(DefaultGenesisState().Params, DefaultGenesisState().Accounts, DefaultPreinstalls),
 			expPass:  true,
 		},
 		{

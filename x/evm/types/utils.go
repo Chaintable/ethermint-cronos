@@ -16,6 +16,7 @@
 package types
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -250,4 +251,9 @@ func GetBaseFee(height int64, ethCfg *params.ChainConfig, feemarketParams *feema
 		return new(big.Int)
 	}
 	return baseFee
+}
+
+// IsEmptyCodeHash checks if the given byte slice represents an empty code hash.
+func IsEmptyCodeHash(bz []byte) bool {
+	return bytes.Equal(bz, EmptyCodeHash)
 }
