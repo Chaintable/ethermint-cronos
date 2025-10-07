@@ -16,6 +16,7 @@
 package keeper
 
 import (
+	"encoding/binary"
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -31,7 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/params"
+	ethparams "github.com/ethereum/go-ethereum/params"
 	ethermint "github.com/evmos/ethermint/types"
 	"github.com/evmos/ethermint/x/evm/statedb"
 	"github.com/evmos/ethermint/x/evm/types"
@@ -39,7 +40,7 @@ import (
 )
 
 // CustomContractFn defines a custom precompiled contract generator with ctx, rules and returns a precompiled contract.
-type CustomContractFn func(sdk.Context, params.Rules) vm.PrecompiledContract
+type CustomContractFn func(sdk.Context, ethparams.Rules) vm.PrecompiledContract
 
 // GasNoLimit is the value for keeper.queryMaxGasLimit in case there is no limit
 const GasNoLimit = 0
@@ -216,7 +217,7 @@ func (k *Keeper) PostTxProcessing(ctx sdk.Context, msg *core.Message, receipt *e
 }
 
 // Tracer return a default vm.Tracer based on current keeper state
-func (k Keeper) Tracer(ctx sdk.Context, msg core.Message, ethCfg *params.ChainConfig) *tracing.Hooks {
+func (k Keeper) Tracer(ctx sdk.Context, msg core.Message, ethCfg *ethparams.ChainConfig) *tracing.Hooks {
 	return types.NewTracer(k.tracer, msg, ethCfg, ctx.BlockHeight(), uint64(ctx.BlockTime().Unix())) //#nosec G115 -- int overflow is not a concern here
 }
 
@@ -278,7 +279,7 @@ func (k *Keeper) GetBalance(ctx sdk.Context, addr sdk.AccAddress, denom string) 
 // - `nil`: london hardfork not enabled.
 // - `0`: london hardfork enabled but feemarket is not enabled.
 // - `n`: both london hardfork and feemarket are enabled.
-func (k Keeper) GetBaseFee(ctx sdk.Context, ethCfg *params.ChainConfig) *big.Int {
+func (k Keeper) GetBaseFee(ctx sdk.Context, ethCfg *ethparams.ChainConfig) *big.Int {
 	return k.getBaseFee(ctx, types.IsLondon(ethCfg, ctx.BlockHeight()))
 }
 
@@ -322,18 +323,57 @@ func (k Keeper) AddTransientGasUsed(ctx sdk.Context, gasUsed uint64) (uint64, er
 
 // SetHeaderHash stores the hash of the current block header in the store.
 func (k Keeper) SetHeaderHash(ctx sdk.Context) {
-	store := ctx.KVStore(k.storeKey)
-	height, err := ethermint.SafeUint64(ctx.BlockHeight())
-	if err != nil {
-		panic(err)
+	acct := k.GetAccount(ctx, ethparams.HistoryStorageAddress)
+	if acct != nil && acct.IsContract() {
+		window := types.DefaultHistoryServeWindow
+		params := k.GetParams(ctx)
+		if params.HistoryServeWindow > 0 {
+			window = params.HistoryServeWindow
+		}
+		// set current block hash in the contract storage, compatible with EIP-2935
+		ringIndex := uint64(ctx.BlockHeight()) % window //nolint:gosec // G115 // won't exceed uint64
+		var key common.Hash
+		binary.BigEndian.PutUint64(key[24:], ringIndex)
+		k.SetState(ctx, ethparams.HistoryStorageAddress, key, ctx.HeaderHash())
+	} else {
+		// fallback old implementation
+		store := ctx.KVStore(k.storeKey)
+		height, err := ethermint.SafeUint64(ctx.BlockHeight())
+		if err != nil {
+			panic(err)
+		}
+		store.Set(types.GetHeaderHashKey(height), ctx.HeaderHash())
 	}
-	store.Set(types.GetHeaderHashKey(height), ctx.HeaderHash())
 }
 
-// GetHeaderHash retrieves the hash of a block header from the store by height.
-func (k Keeper) GetHeaderHash(ctx sdk.Context, height uint64) []byte {
+// GetHeaderHash sets block hash into EIP-2935 compatible storage contract.
+func (k Keeper) GetHeaderHash(ctx sdk.Context, height uint64) common.Hash {
+	// check if history contract has been deployed
+	acct := k.GetAccount(ctx, ethparams.HistoryStorageAddress)
+	if acct != nil && acct.IsContract() {
+		window := types.DefaultHistoryServeWindow
+		params := k.GetParams(ctx)
+		if params.HistoryServeWindow > 0 {
+			window = params.HistoryServeWindow
+		}
+
+		ringIndex := height % window
+		var key common.Hash
+		binary.BigEndian.PutUint64(key[24:], ringIndex)
+		hash := k.GetState(ctx, ethparams.HistoryStorageAddress, key)
+
+		if hash.Cmp(common.Hash{}) != 0 {
+			return hash
+		}
+	}
+	// fall back to old behavior for retro compatibility
+	// TODO can be removed along with DeleteHeaderHash once HistoryStorage has been filled up in next protocol upgrade
 	store := ctx.KVStore(k.storeKey)
-	return store.Get(types.GetHeaderHashKey(height))
+	hashByte := store.Get(types.GetHeaderHashKey(height))
+	if len(hashByte) > 0 {
+		return common.BytesToHash(hashByte)
+	}
+	return common.Hash{}
 }
 
 // DeleteHeaderHash removes the hash of a block header from the store by height

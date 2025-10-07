@@ -21,6 +21,8 @@ import (
 	"math/big"
 	"sort"
 
+	cmttypes "github.com/cometbft/cometbft/types"
+
 	errorsmod "cosmossdk.io/errors"
 	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -29,7 +31,6 @@ import (
 	"github.com/evmos/ethermint/x/evm/types"
 	"github.com/holiman/uint256"
 
-	cmttypes "github.com/cometbft/cometbft/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/tracing"
@@ -95,8 +96,8 @@ func (k *Keeper) NewEVM(
 
 // GetHashFn implements vm.GetHashFunc for Ethermint. It returns hash for 3 cases:
 //  1. The requested height matches current block height from the context.
-//  2. The requested height is within the valid range, retrieve the hash from GetHeaderHash for heights after sdk50.
-//  3. The requested height is within the valid range, retrieve the hash from GetHistoricalInfo for heights before sdk50.
+//  2. The requested height is below current block height, follow EIP-2935.
+//  3. The requested height is above current block height, return empty
 func (k Keeper) GetHashFn(ctx sdk.Context) vm.GetHashFunc {
 	return func(num64 uint64) common.Hash {
 		h, err := ethermint.SafeInt64(num64)
@@ -114,31 +115,36 @@ func (k Keeper) GetHashFn(ctx sdk.Context) vm.GetHashFunc {
 			}
 		}
 		// Align check with https://github.com/ethereum/go-ethereum/blob/release/1.11/core/vm/instructions.go#L433
-		headerNum := k.GetParams(ctx).HeaderHashNum
 		var lower uint64
+		headerNum := k.GetParams(ctx).HeaderHashNum
 		if upper <= headerNum {
 			lower = 0
 		} else {
 			lower = upper - headerNum
 		}
-		if num64 < lower || num64 >= upper {
-			return common.Hash{}
+
+		if upper > num64 {
+			// The requested height is historical, query EIP-2935 contract storage
+			headerHash := k.GetHeaderHash(ctx, num64)
+			if headerHash.Cmp(common.Hash{}) != 0 {
+				return headerHash
+			} else if num64 >= lower {
+				// Pre upgrade case
+				// In case EIP-2935 is not supported and data cannot be found, we fetch historical info
+				histInfo, err := k.stakingKeeper.GetHistoricalInfo(ctx, h)
+				if err != nil {
+					k.Logger(ctx).Debug("historical info not found", "height", h, "err", err.Error())
+					return common.Hash{}
+				}
+				header, err := cmttypes.HeaderFromProto(&histInfo.Header)
+				if err != nil {
+					k.Logger(ctx).Error("failed to cast tendermint header from proto", "error", err)
+					return common.Hash{}
+				}
+				return common.BytesToHash(header.Hash())
+			}
 		}
-		hash := k.GetHeaderHash(ctx, num64)
-		if len(hash) > 0 {
-			return common.BytesToHash(hash)
-		}
-		histInfo, err := k.stakingKeeper.GetHistoricalInfo(ctx, h)
-		if err != nil {
-			k.Logger(ctx).Debug("historical info not found", "height", h, "err", err.Error())
-			return common.Hash{}
-		}
-		header, err := cmttypes.HeaderFromProto(&histInfo.Header)
-		if err != nil {
-			k.Logger(ctx).Error("failed to cast tendermint header from proto", "error", err)
-			return common.Hash{}
-		}
-		return common.BytesToHash(header.Hash())
+		return common.Hash{}
 	}
 }
 
