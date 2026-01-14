@@ -429,13 +429,23 @@ func (k *Keeper) ApplyMessageWithConfig(
 	stateDB.Prepare(rules, msg.From, cfg.CoinBase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
 
 	if contractCreation {
-		// take over the nonce management from evm:
-		// - reset sender's nonce to msg.Nonce() to generate correct contract address.
-		// - set the nonce back to the original value after contract creation.
+		// Take over nonce management from evm:
+		// - Reset sender's nonce to msg.Nonce so evm.Create() computes correct contract address
+		// - After evm.Create(), calculate the final nonce accounting for:
+		//   1. The ante handler's nonce increment (already in oldNonce)
+		//   2. Any additional nonce increments from nested CREATEs (e.g., via EIP-7702 callbacks)
+		//
+		// This is important for batch transactions where ante handler pre-increments
+		// nonces for all messages, and for EIP-7702 where constructor callbacks can
+		// trigger additional contract deployments.
 		oldNonce := stateDB.GetNonce(sender)
 		stateDB.SetNonce(sender, msg.Nonce, tracing.NonceChangeUnspecified)
 		ret, _, leftoverGas, vmErr = evm.Create(sender, msg.Data, leftoverGas, uint256.MustFromBig(msg.Value))
-		stateDB.SetNonce(sender, oldNonce, tracing.NonceChangeUnspecified)
+		// evm.Create() increments nonce from msg.Nonce to (msg.Nonce + 1 + nestedCreates)
+		// We need: oldNonce + nestedCreates
+		afterCreateNonce := stateDB.GetNonce(sender)
+		nestedCreates := afterCreateNonce - msg.Nonce - 1
+		stateDB.SetNonce(sender, oldNonce+nestedCreates, tracing.NonceChangeUnspecified)
 	} else {
 		if msg.SetCodeAuthorizations != nil {
 			for _, auth := range msg.SetCodeAuthorizations {
