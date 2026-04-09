@@ -66,6 +66,7 @@ func (k *Keeper) NewEVM(
 		Difficulty:  cfg.Difficulty,
 		BaseFee:     cfg.BaseFee,
 		Random:      cfg.Random,
+		BlobBaseFee: cfg.BlobBaseFee,
 	}
 	if cfg.BlockOverrides != nil {
 		cfg.BlockOverrides.Apply(&blockCtx)

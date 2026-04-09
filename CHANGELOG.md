@@ -37,6 +37,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ## Unreleased
 
+* (evm) [#883](https://github.com/crypto-org-chain/ethermint/pull/883) fix: prevent nil pointer dereference on BLOBBASEFEE opcode
 * (evm) [#882](https://github.com/crypto-org-chain/ethermint/pull/882) fix: prevent nested StateDB storage overwrites
 * (rpc) [#881](https://github.com/crypto-org-chain/ethermint/pull/881) feat(RPC): implement `eth_simulateV1` RPC
 * (rpc) [#879](https://github.com/crypto-org-chain/ethermint/pull/879) fix(eth_sign): apply EIP-191 prefix to domain-separate personal signatures from transaction signatures.
