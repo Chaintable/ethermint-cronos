@@ -37,6 +37,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ## Unreleased
 
+* (evm) [#880](https://github.com/crypto-org-chain/ethermint/pull/880) perf: reduce allocations in EVM hot paths
 * (evm) [#883](https://github.com/crypto-org-chain/ethermint/pull/883) fix: prevent nil pointer dereference on BLOBBASEFEE opcode
 * (evm) [#882](https://github.com/crypto-org-chain/ethermint/pull/882) fix: prevent nested StateDB storage overwrites
 * (rpc) [#881](https://github.com/crypto-org-chain/ethermint/pull/881) feat(RPC): implement `eth_simulateV1` RPC
