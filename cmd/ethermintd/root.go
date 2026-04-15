@@ -17,13 +17,12 @@ package main
 
 import (
 	"errors"
-	"io"
 	"os"
 	"slices"
 
 	"github.com/spf13/cobra"
 
-	"cosmossdk.io/log"
+	"cosmossdk.io/log/v2"
 	confixcmd "cosmossdk.io/tools/confix/cmd"
 	cmtcfg "github.com/cometbft/cometbft/config"
 	cmtcli "github.com/cometbft/cometbft/libs/cli"
@@ -49,7 +48,7 @@ import (
 	authcmd "github.com/cosmos/cosmos-sdk/x/auth/client/cli"
 	"github.com/cosmos/cosmos-sdk/x/auth/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
-	"github.com/cosmos/cosmos-sdk/x/crisis"
+	"github.com/cosmos/cosmos-sdk/contrib/x/crisis"
 	genutilcli "github.com/cosmos/cosmos-sdk/x/genutil/client/cli"
 	ethermintclient "github.com/evmos/ethermint/client"
 	"github.com/evmos/ethermint/crypto/hd"
@@ -70,7 +69,7 @@ const (
 // main function.
 func NewRootCmd() (*cobra.Command, ethermint.EncodingConfig) {
 	tempApp := evmd.NewEthermintApp(
-		log.NewNopLogger(), dbm.NewMemDB(), nil, true,
+		log.NewNopLogger(), dbm.NewMemDB(), true,
 		simtestutil.NewAppOptionsWithFlagHome(evmd.DefaultNodeHome),
 	)
 	encodingConfig := tempApp.EncodingConfig()
@@ -164,8 +163,8 @@ func initRootCmd(
 	cfg := sdk.GetConfig()
 	cfg.Seal()
 
-	sdkAppCreator := func(l log.Logger, d dbm.DB, w io.Writer, ao servertypes.AppOptions) servertypes.Application {
-		return newApp(l, d, w, ao)
+	sdkAppCreator := func(l log.Logger, d dbm.DB, ao servertypes.AppOptions) servertypes.Application {
+		return newApp(l, d, ao)
 	}
 
 	rootCmd.AddCommand(
@@ -260,10 +259,10 @@ func txCommand() *cobra.Command {
 }
 
 // newApp creates the application
-func newApp(logger log.Logger, db dbm.DB, traceStore io.Writer, appOpts servertypes.AppOptions) server.AppWithPendingTxListener {
+func newApp(logger log.Logger, db dbm.DB, appOpts servertypes.AppOptions) server.AppWithPendingTxListener {
 	baseappOptions := sdkserver.DefaultBaseappOptions(appOpts)
 	ethermintApp := evmd.NewEthermintApp(
-		logger, db, traceStore, true,
+		logger, db, true,
 		appOpts,
 		baseappOptions...,
 	)
@@ -275,7 +274,6 @@ func newApp(logger log.Logger, db dbm.DB, traceStore io.Writer, appOpts serverty
 func appExport(
 	logger log.Logger,
 	db dbm.DB,
-	traceStore io.Writer,
 	height int64,
 	forZeroHeight bool,
 	jailAllowedAddrs []string,
@@ -289,13 +287,13 @@ func appExport(
 	}
 
 	if height != -1 {
-		ethermintApp = evmd.NewEthermintApp(logger, db, traceStore, false, appOpts, baseapp.SetChainID(ChainID))
+		ethermintApp = evmd.NewEthermintApp(logger, db, false, appOpts, baseapp.SetChainID(ChainID))
 
 		if err := ethermintApp.LoadHeight(height); err != nil {
 			return servertypes.ExportedApp{}, err
 		}
 	} else {
-		ethermintApp = evmd.NewEthermintApp(logger, db, traceStore, true, appOpts, baseapp.SetChainID(ChainID))
+		ethermintApp = evmd.NewEthermintApp(logger, db, true, appOpts, baseapp.SetChainID(ChainID))
 	}
 
 	return ethermintApp.ExportAppStateAndValidators(forZeroHeight, jailAllowedAddrs, modulesToExport)

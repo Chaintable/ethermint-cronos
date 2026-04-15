@@ -2,7 +2,7 @@ package v6
 
 import (
 	sdkmath "cosmossdk.io/math"
-	storetypes "cosmossdk.io/store/types"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	"github.com/cosmos/cosmos-sdk/codec"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	v4types "github.com/evmos/ethermint/x/evm/migrations/v4/types"

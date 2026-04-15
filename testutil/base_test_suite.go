@@ -8,7 +8,7 @@ import (
 
 	coreheader "cosmossdk.io/core/header"
 	sdkmath "cosmossdk.io/math"
-	storetypes "cosmossdk.io/store/types"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	abci "github.com/cometbft/cometbft/abci/types"
 	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	tmtypes "github.com/cometbft/cometbft/types"
@@ -154,7 +154,7 @@ func (suite *BaseTestSuiteWithAccount) PostSetupValidator(t require.TestingT) st
 		BaseAccount: authtypes.NewBaseAccount(sdk.AccAddress(suite.Address.Bytes()), nil, 0, 0),
 		CodeHash:    common.BytesToHash(crypto.Keccak256(nil)).String(),
 	}
-	acc.AccountNumber = suite.App.AccountKeeper.NextAccountNumber(suite.Ctx)
+	acc.AccountNumber = suite.App.AccountKeeper.NextAccountNumber(suite.Ctx, acc)
 	suite.App.AccountKeeper.SetAccount(suite.Ctx, acc)
 	valAddr := sdk.ValAddress(suite.Address.Bytes())
 	validator, err := stakingtypes.NewValidator(valAddr.String(), suite.ConsPubKey, stakingtypes.Description{})

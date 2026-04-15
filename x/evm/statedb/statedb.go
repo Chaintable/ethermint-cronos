@@ -23,7 +23,7 @@ import (
 
 	errorsmod "cosmossdk.io/errors"
 	sdkmath "cosmossdk.io/math"
-	"cosmossdk.io/store/cachemulti"
+	"github.com/cosmos/cosmos-sdk/store/v2/cachemulti"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/state"
@@ -79,13 +79,12 @@ type StateDB struct {
 	origCtx sdk.Context
 	// ctx is a branched context on top of the caller context
 	ctx sdk.Context
-	// cacheMS caches the `ctx.MultiStore()` to avoid type assertions all the time, `ctx.MultiStore()` is not modified during the whole time,
-	// which is evident by `ctx.WithMultiStore` is not called after statedb constructed.
+	// cacheMS is the active cache multistore branch (nested by ExecuteNativeAction via CacheMultiStore).
 	cacheMS cachemulti.Store
+	// cacheLayers is the stack of branches (root first); flushed on Commit, truncated on native revert.
+	cacheLayers []cachemulti.Store
 
-	// the action to commit native state, there are two cases:
-	// if the parent store is not `cachemulti.Store`, we create a new one, and call `Write` to commit, this could only happen in unit tests.
-	// if the parent store is already a `cachemulti.Store`, we branch it and call `Restore` to commit.
+	// commitMS flushes nested native cache layers into the parent multistore.
 	commitMS func()
 
 	// Journal of state modifications. This is the backbone of
@@ -124,25 +123,26 @@ func New(ctx sdk.Context, keeper Keeper, txConfig TxConfig) *StateDB {
 }
 
 func NewWithParams(ctx sdk.Context, keeper Keeper, txConfig TxConfig, evmDenom string) *StateDB {
-	var (
-		cacheMS  cachemulti.Store
-		commitMS func()
-	)
+	var cacheMS cachemulti.Store
 	if parentCacheMS, ok := ctx.MultiStore().(cachemulti.Store); ok {
-		cacheMS = parentCacheMS.Clone()
-		commitMS = func() { parentCacheMS.Restore(cacheMS) }
+		branched, branchOK := parentCacheMS.CacheMultiStore().(cachemulti.Store)
+		if !branchOK {
+			panic("expect CacheMultiStore result to be cachemulti.Store")
+		}
+		cacheMS = branched
 	} else {
-		// in unit test, it could be run with a uncached multistore
-		if cacheMS, ok = ctx.MultiStore().CacheWrap().(cachemulti.Store); !ok {
+		// In unit tests, it can run against an uncached multistore.
+		branched, branchOK := ctx.MultiStore().CacheWrap().(cachemulti.Store)
+		if !branchOK {
 			panic("expect the CacheWrap result to be cachemulti.Store")
 		}
-		commitMS = cacheMS.Write
+		cacheMS = branched
 	}
 	db := &StateDB{
 		origCtx:          ctx,
 		keeper:           keeper,
 		cacheMS:          cacheMS,
-		commitMS:         commitMS,
+		cacheLayers:      []cachemulti.Store{cacheMS},
 		stateObjects:     make(map[common.Address]*stateObject),
 		journal:          newJournal(),
 		accessList:       newAccessList(),
@@ -153,6 +153,7 @@ func NewWithParams(ctx sdk.Context, keeper Keeper, txConfig TxConfig, evmDenom s
 		nativeEvents: sdk.Events{},
 		evmDenom:     evmDenom,
 	}
+	db.commitMS = db.flushNativeCacheLayers
 	db.ctx = ctx.WithValue(StateDBContextKey, db).WithMultiStore(cacheMS)
 	return db
 }
@@ -364,31 +365,50 @@ func (s *StateDB) setStateObject(object *stateObject) {
 	s.stateObjects[object.Address()] = object
 }
 
-func (s *StateDB) snapshotNativeState() cachemulti.Store {
-	return s.cacheMS.Clone()
-}
-
-func (s *StateDB) revertNativeStateToSnapshot(ms cachemulti.Store) {
-	s.cacheMS.Restore(ms)
-}
-
 // ExecuteNativeAction executes native action in isolate,
 // the writes will be revert when either the native action itself fail
 // or the wrapping message call reverted.
 func (s *StateDB) ExecuteNativeAction(contract common.Address, converter EventConverter, action func(ctx sdk.Context) error) error {
-	snapshot := s.snapshotNativeState()
-	eventManager := sdk.NewEventManager()
+	prevStore := s.cacheMS
+	prevLayerCount := len(s.cacheLayers)
 
-	if err := action(s.ctx.WithEventManager(eventManager)); err != nil {
-		s.revertNativeStateToSnapshot(snapshot)
+	nextStore, ok := s.cacheMS.CacheMultiStore().(cachemulti.Store)
+	if !ok {
+		panic("expect nested CacheMultiStore result to be cachemulti.Store")
+	}
+
+	eventManager := sdk.NewEventManager()
+	actionCtx := s.ctx.WithMultiStore(nextStore).WithEventManager(eventManager)
+
+	if err := action(actionCtx); err != nil {
 		return err
 	}
+
+	s.cacheMS = nextStore
+	s.cacheLayers = append(s.cacheLayers, nextStore)
+	s.ctx = s.ctx.WithMultiStore(nextStore)
 
 	events := eventManager.Events()
 	s.emitNativeEvents(contract, converter, events)
 	s.nativeEvents = s.nativeEvents.AppendEvents(events)
-	s.journal.append(nativeChange{snapshot: snapshot, events: len(events)})
+	s.journal.append(nativeChange{
+		previousStore:      prevStore,
+		previousLayerCount: prevLayerCount,
+		events:             len(events),
+	})
 	return nil
+}
+
+func (s *StateDB) restoreNativeState(previousStore cachemulti.Store, previousLayerCount int) {
+	s.cacheMS = previousStore
+	s.cacheLayers = s.cacheLayers[:previousLayerCount]
+	s.ctx = s.ctx.WithMultiStore(previousStore)
+}
+
+func (s *StateDB) flushNativeCacheLayers() {
+	for i := len(s.cacheLayers) - 1; i >= 0; i-- {
+		s.cacheLayers[i].Write()
+	}
 }
 
 // Context returns the current context for query native state in precompiles.

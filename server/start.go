@@ -48,8 +48,8 @@ import (
 	ethmetricsexp "github.com/ethereum/go-ethereum/metrics/exp"
 
 	errorsmod "cosmossdk.io/errors"
-	"cosmossdk.io/log"
-	pruningtypes "cosmossdk.io/store/pruning/types"
+	"cosmossdk.io/log/v2"
+	pruningtypes "github.com/cosmos/cosmos-sdk/store/v2/pruning/types"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/flags"
 	"github.com/cosmos/cosmos-sdk/server"
@@ -77,8 +77,8 @@ type AppWithPendingTxListener interface {
 	PendingTxListener
 }
 
-// AppCreator is a function that allows us to lazily initialize an application implementing with AppWithPendingTxStream.
-type AppCreator func(log.Logger, dbm.DB, io.Writer, types.AppOptions) AppWithPendingTxListener
+// AppCreator lazily builds an application that implements AppWithPendingTxListener.
+type AppCreator func(log.Logger, dbm.DB, types.AppOptions) AppWithPendingTxListener
 
 // StartOptions defines options that can be customized in `StartCmd`
 type StartOptions struct {
@@ -87,11 +87,11 @@ type StartOptions struct {
 	DBOpener        DBOpener
 }
 
-// NewDefaultStartOptions use the default db opener provided in tm-db.
+// NewDefaultStartOptions wraps appCreator for the SDK server and uses the default openDB opener.
 func NewDefaultStartOptions(appCreator AppCreator, defaultNodeHome string) StartOptions {
 	return StartOptions{
-		AppCreator: func(l log.Logger, d dbm.DB, w io.Writer, ao types.AppOptions) types.Application {
-			return appCreator(l, d, w, ao)
+		AppCreator: func(l log.Logger, d dbm.DB, ao types.AppOptions) types.Application {
+			return appCreator(l, d, ao)
 		},
 		DefaultNodeHome: defaultNodeHome,
 		DBOpener:        openDB,
@@ -257,13 +257,7 @@ func startStandAlone(svrCtx *server.Context, opts StartOptions) error {
 		return err
 	}
 
-	traceWriterFile := svrCtx.Viper.GetString(srvflags.TraceStore)
-	traceWriter, err := openTraceWriter(traceWriterFile)
-	if err != nil {
-		return err
-	}
-
-	app := opts.AppCreator(svrCtx.Logger, db, traceWriter, svrCtx.Viper)
+	app := opts.AppCreator(svrCtx.Logger, db, svrCtx.Viper)
 	defer func() {
 		if err := app.Close(); err != nil {
 			svrCtx.Logger.Error("close application failed", "error", err.Error())
@@ -324,13 +318,6 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 		return err
 	}
 
-	traceWriterFile := svrCtx.Viper.GetString(srvflags.TraceStore)
-	traceWriter, err := openTraceWriter(traceWriterFile)
-	if err != nil {
-		logger.Error("failed to open trace writer", "error", err.Error())
-		return err
-	}
-
 	config, err := config.GetConfig(svrCtx.Viper)
 	if err != nil {
 		logger.Error("failed to get server config", "error", err.Error())
@@ -342,7 +329,7 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 		return err
 	}
 
-	app := opts.AppCreator(svrCtx.Logger, db, traceWriter, svrCtx.Viper)
+	app := opts.AppCreator(svrCtx.Logger, db, svrCtx.Viper)
 	defer func() {
 		if err := app.Close(); err != nil {
 			logger.Error("close application failed", "error", err.Error())
@@ -374,7 +361,7 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 		var clientCreator proxy.ClientCreator
 		if svrCtx.Viper.GetBool(FlagAsyncCheckTx) {
 			logger.Info("enabling async check tx")
-			clientCreator = proxy.NewConsensusSyncLocalClientCreator(cmtApp)
+			clientCreator = proxy.NewConnSyncLocalClientCreator(cmtApp)
 		} else {
 			clientCreator = proxy.NewLocalClientCreator(cmtApp)
 		}
