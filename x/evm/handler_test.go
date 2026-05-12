@@ -418,7 +418,10 @@ func (suite *HandlerTestSuite) deployERC20Contract() common.Address {
 // - when transaction reverted, gas refund works.
 // - when transaction reverted, nonce is still increased.
 func (suite *HandlerTestSuite) TestERC20TransferReverted() {
-	intrinsicGas := uint64(21572)
+	transferData, err := types.ERC20Contract.ABI.Pack("transfer", suite.Address, big.NewInt(10))
+	suite.Require().NoError(err)
+	floorDataGas, err := core.FloorDataGas(transferData)
+	suite.Require().NoError(err)
 	// test different hooks scenarios
 	testCases := []struct {
 		msg      string
@@ -428,13 +431,13 @@ func (suite *HandlerTestSuite) TestERC20TransferReverted() {
 	}{
 		{
 			"no hooks",
-			intrinsicGas, // enough for intrinsicGas, but not enough for execution
+			floorDataGas, // enough for floorDataGas, but not enough for execution
 			nil,
 			"out of gas",
 		},
 		{
 			"success hooks",
-			intrinsicGas, // enough for intrinsicGas, but not enough for execution
+			floorDataGas, // enough for floorDataGas, but not enough for execution
 			&DummyHook{},
 			"out of gas",
 		},
@@ -484,8 +487,8 @@ func (suite *HandlerTestSuite) TestERC20TransferReverted() {
 
 			rules := params.Rules{
 				IsHomestead: true,
-				IsIstanbul: true,
-				IsShanghai: true,
+				IsIstanbul:  true,
+				IsShanghai:  true,
 			}
 			fees, err := keeper.VerifyFee(tx, "aphoton", baseFee, rules, suite.Ctx.IsCheckTx())
 			suite.Require().NoError(err)
@@ -518,7 +521,11 @@ func (suite *HandlerTestSuite) TestERC20TransferReverted() {
 }
 
 func (suite *HandlerTestSuite) TestContractDeploymentRevert() {
-	intrinsicGas := uint64(134510)
+	ctorArgsForFloor, err := types.ERC20Contract.ABI.Pack("", suite.Address, big.NewInt(0))
+	suite.Require().NoError(err)
+	deployData := append(types.ERC20Contract.Bin, ctorArgsForFloor...)
+	floorDataGas, err := core.FloorDataGas(deployData)
+	suite.Require().NoError(err)
 	testCases := []struct {
 		msg      string
 		gasLimit uint64
@@ -526,12 +533,12 @@ func (suite *HandlerTestSuite) TestContractDeploymentRevert() {
 	}{
 		{
 			"no hooks",
-			intrinsicGas,
+			floorDataGas,
 			nil,
 		},
 		{
 			"success hooks",
-			intrinsicGas,
+			floorDataGas,
 			&DummyHook{},
 		},
 	}
