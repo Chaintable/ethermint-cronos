@@ -1,0 +1,15 @@
+--- a/builder/symlink/symlink.go
++++ b/builder/symlink/symlink.go
+@@ -89,6 +89,11 @@ func populateVendorPath(vendorPath string, src string) {
+ 	for _, f := range files {
+ 		innerSrc := filepath.Join(src, f.Name())
+ 		dst := filepath.Join(vendorPath, f.Name())
++		// Skip entries already claimed by a more-specific sub-module symlink
++		// placed in an earlier makeSymlinks iteration (e.g. genproto/googleapis/api
++		// set up before the genproto root is populated).
++		if _, err := os.Lstat(dst); err == nil {
++			continue
++		}
+ 		if err := os.Symlink(innerSrc, dst); err != nil {
+ 			fmt.Println("symlink error, trying", innerSrc, err)
+ 			populateVendorPath(dst, innerSrc)

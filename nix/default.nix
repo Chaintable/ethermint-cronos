@@ -19,6 +19,17 @@ let
                   'manyLinuxTargetMachines = { riscv64 = "riscv64";'
     '';
   };
+  # Patch gomod2nix's symlink builder to skip vendor entries that already exist.
+  # Without this, split-module monorepos (e.g. google.golang.org/genproto +
+  # genproto/googleapis/api) cause "file exists" panics: sub-module symlinks are
+  # placed first, then populateVendorPath tries to re-symlink the same paths
+  # from the parent module's nix store. Upstream issue is unfixed as of
+  # nix-community/gomod2nix@514283ec.
+  patchedGomod2nix = bootstrapPkgs.applyPatches {
+    name = "gomod2nix-symlink-dedup";
+    src = sources.gomod2nix;
+    patches = [ ./gomod2nix-symlink-dedup.patch ];
+  };
 in
 import sources.nixpkgs {
   overlays = [
@@ -64,7 +75,7 @@ import sources.nixpkgs {
     (
       final: prev:
       let
-        gomodSrc = sources.gomod2nix;
+        gomodSrc = patchedGomod2nix;
         callPackage = final.callPackage;
         gomodBuilder = callPackage "${gomodSrc}/builder" { };
       in
