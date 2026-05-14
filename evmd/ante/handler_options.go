@@ -186,7 +186,8 @@ func newCosmosAnteHandler(ctx sdk.Context, options HandlerOptions, extra ...sdk.
 	if options.DynamicFeeChecker {
 		txFeeChecker = evm.NewDynamicFeeChecker(ethCfg, &evmParams, &feemarketParams)
 	}
-	decorators := []sdk.AnteDecorator{ //nolint:prealloc
+	decorators := make([]sdk.AnteDecorator, 0, 16+len(extra))
+	decorators = append(decorators,
 		cosmos.RejectMessagesDecorator{}, // reject MsgEthereumTxs
 		// disable the Msg types that cannot be included on an authz.MsgExec msgs field
 		cosmos.NewAuthzLimiterDecorator(options.DisabledAuthzMsgs),
@@ -205,7 +206,7 @@ func newCosmosAnteHandler(ctx sdk.Context, options HandlerOptions, extra ...sdk.
 		ante.NewSigVerificationDecorator(options.AccountKeeper, options.SignModeHandler),
 		ante.NewIncrementSequenceDecorator(options.AccountKeeper),
 		ibcante.NewRedundantRelayDecorator(options.IBCKeeper),
-	}
+	)
 	decorators = append(decorators, extra...)
 	return sdk.ChainAnteDecorators(decorators...)
 }
