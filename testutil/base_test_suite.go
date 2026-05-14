@@ -90,7 +90,7 @@ func (suite *BaseTestSuite) SetupTestWithCbAndOpts(
 ) {
 	checkTx := false
 	suite.App = SetupWithOpts(checkTx, patch, appOptions)
-	suite.Ctx = suite.App.NewUncachedContext(checkTx, tmproto.Header{
+	suite.Ctx = suite.App.NewUncachedContext(checkTx, tmproto.Header{ //nolint:staticcheck
 		Height:  1,
 		ChainID: ChainID,
 		Time:    time.Now().UTC(),
@@ -262,7 +262,7 @@ func (suite *BaseTestSuiteWithAccount) Commit(t require.TestingT) {
 	header.Time = newBlockTime
 	header.Height++
 	// update ctx
-	suite.Ctx = suite.App.NewUncachedContext(false, header).WithHeaderInfo(coreheader.Info{
+	suite.Ctx = suite.App.NewUncachedContext(false, header).WithHeaderInfo(coreheader.Info{ //nolint:staticcheck
 		Height: header.Height,
 		Time:   header.Time,
 	})

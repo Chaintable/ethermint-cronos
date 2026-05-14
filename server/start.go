@@ -489,11 +489,11 @@ func OpenIndexerDB(rootDir string, backendType dbm.BackendType) (dbm.DB, error) 
 	return dbm.NewDB("evmindexer", backendType, dataDir)
 }
 
-func startTelemetry(cfg config.Config) (*telemetry.Metrics, error) {
-	if !cfg.Telemetry.Enabled {
+func startTelemetry(cfg config.Config) (*telemetry.Metrics, error) { //nolint:staticcheck
+	if !cfg.Telemetry.Enabled { //nolint:staticcheck
 		return nil, nil
 	}
-	return telemetry.New(cfg.Telemetry)
+	return telemetry.New(cfg.Telemetry) //nolint:staticcheck
 }
 
 // wrapCPUProfile runs callback in a goroutine, then wait for quit signals.
@@ -600,7 +600,7 @@ func startAPIServer(
 	svrCfg serverconfig.Config,
 	app types.Application,
 	grpcSrv *grpc.Server,
-	metrics *telemetry.Metrics,
+	metrics *telemetry.Metrics, //nolint:staticcheck
 ) {
 	if !svrCfg.API.Enable {
 		return
@@ -609,8 +609,8 @@ func startAPIServer(
 	apiSrv := api.New(clientCtx, svrCtx.Logger.With("server", "api"), grpcSrv)
 	app.RegisterAPIRoutes(apiSrv, svrCfg.API)
 
-	if svrCfg.Telemetry.Enabled {
-		apiSrv.SetTelemetry(metrics)
+	if svrCfg.Telemetry.Enabled { //nolint:staticcheck
+		apiSrv.SetTelemetry(metrics) //nolint:staticcheck
 	}
 
 	g.Go(func() error {

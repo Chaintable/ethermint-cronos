@@ -208,7 +208,7 @@ func genesisCommand(txConfig client.TxConfig, basicManager module.BasicManager, 
 }
 
 func addModuleInitFlags(startCmd *cobra.Command) {
-	crisis.AddModuleInitFlags(startCmd)
+	crisis.AddModuleInitFlags(startCmd) //nolint:staticcheck
 }
 
 func queryCommand() *cobra.Command {

@@ -271,8 +271,8 @@ func New(l Logger, baseDir string, cfg Config) (*Network, error) {
 		appCfg.MinGasPrices = cfg.MinGasPrices
 		appCfg.API.Enable = true
 		appCfg.API.Swagger = false
-		appCfg.Telemetry.Enabled = false
-		appCfg.Telemetry.GlobalLabels = [][]string{{"chain_id", cfg.ChainID}}
+		appCfg.Telemetry.Enabled = false                                    //nolint:staticcheck
+		appCfg.Telemetry.GlobalLabels = [][]string{{"chain_id", cfg.ChainID}} //nolint:staticcheck
 
 		ctx := server.NewDefaultContext()
 		cmtCfg := ctx.Config
