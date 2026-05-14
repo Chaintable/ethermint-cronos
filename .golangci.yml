@@ -58,6 +58,12 @@ linters:
       - linters:
           - revive
         path: (types|interfaces)/
+      - linters:
+          - revive
+        path: rpc/namespaces/ethereum/net/
+      - linters:
+          - staticcheck
+        text: "SA1019:"
     paths:
       - third_party$
       - builtin$

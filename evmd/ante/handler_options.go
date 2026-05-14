@@ -18,12 +18,12 @@ package ante
 import (
 	errorsmod "cosmossdk.io/errors"
 	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
-	txsigning "github.com/cosmos/cosmos-sdk/x/tx/signing"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	errortypes "github.com/cosmos/cosmos-sdk/types/errors"
 	"github.com/cosmos/cosmos-sdk/types/tx/signing"
 	"github.com/cosmos/cosmos-sdk/x/auth/ante"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
+	txsigning "github.com/cosmos/cosmos-sdk/x/tx/signing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	evmante "github.com/evmos/ethermint/ante"
 	"github.com/evmos/ethermint/ante/cache"
@@ -186,7 +186,7 @@ func newCosmosAnteHandler(ctx sdk.Context, options HandlerOptions, extra ...sdk.
 	if options.DynamicFeeChecker {
 		txFeeChecker = evm.NewDynamicFeeChecker(ethCfg, &evmParams, &feemarketParams)
 	}
-	decorators := []sdk.AnteDecorator{
+	decorators := []sdk.AnteDecorator{ //nolint:prealloc
 		cosmos.RejectMessagesDecorator{}, // reject MsgEthereumTxs
 		// disable the Msg types that cannot be included on an authz.MsgExec msgs field
 		cosmos.NewAuthzLimiterDecorator(options.DisabledAuthzMsgs),

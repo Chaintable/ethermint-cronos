@@ -125,9 +125,10 @@ func (sim *Simulator) processBlock(
 	// mutate global keeper state).
 	isMerge := header.Difficulty == nil || header.Difficulty.Sign() == 0
 	rules := sim.chainConfig.Rules(header.Number, isMerge, header.Time)
-	precompiles := make(vm.PrecompiledContracts)
-	active := make([]common.Address, 0)
-	for addr, c := range vm.DefaultPrecompiles(rules) {
+	defaultPrecompiles := vm.DefaultPrecompiles(rules)
+	precompiles := make(vm.PrecompiledContracts, len(defaultPrecompiles))
+	active := make([]common.Address, 0, len(defaultPrecompiles))
+	for addr, c := range defaultPrecompiles {
 		precompiles[addr] = c
 		active = append(active, addr)
 	}

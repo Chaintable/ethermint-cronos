@@ -36,7 +36,7 @@ func newLegacyCosmosAnteHandlerEip712(ctx sdk.Context, options HandlerOptions, e
 	if options.DynamicFeeChecker {
 		txFeeChecker = evm.NewDynamicFeeChecker(ethCfg, &evmParams, &feemarketParams)
 	}
-	decorators := []sdk.AnteDecorator{
+	decorators := []sdk.AnteDecorator{ //nolint:prealloc
 		cosmos.RejectMessagesDecorator{}, // reject MsgEthereumTxs
 		// disable the Msg types that cannot be included on an authz.MsgExec msgs field
 		cosmos.NewAuthzLimiterDecorator(options.DisabledAuthzMsgs),

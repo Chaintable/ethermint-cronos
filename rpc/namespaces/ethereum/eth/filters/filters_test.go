@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"cosmossdk.io/log"
+	logv2 "cosmossdk.io/log/v2"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
@@ -47,7 +47,7 @@ func (s *stubBackend) RPCBlockRangeCap() int32       { return 2000 }
 func TestGetLogs_ReversedBlockRange(t *testing.T) {
 	const head = int64(100)
 	api := &PublicFilterAPI{
-		logger:  log.NewNopLogger(),
+		logger:  logv2.NewNopLogger(),
 		backend: &stubBackend{head: head},
 	}
 
@@ -77,7 +77,7 @@ func TestGetLogs_ReversedBlockRange(t *testing.T) {
 func TestGetLogs_ToBlockExceedsHead(t *testing.T) {
 	const head = int64(100)
 	api := &PublicFilterAPI{
-		logger:  log.NewNopLogger(),
+		logger:  logv2.NewNopLogger(),
 		backend: &stubBackend{head: head},
 	}
 
@@ -114,7 +114,7 @@ func TestGetLogs_ToBlockExceedsHead(t *testing.T) {
 
 func TestNewFilter_ReversedBlockRange(t *testing.T) {
 	api := &PublicFilterAPI{
-		logger:  log.NewNopLogger(),
+		logger:  logv2.NewNopLogger(),
 		backend: &stubBackend{head: 100},
 		filters: make(map[rpc.ID]*filter),
 	}
@@ -145,7 +145,7 @@ func TestNewFilter_ReversedBlockRange(t *testing.T) {
 func TestGetFilterLogs_LatestResolvesReversedRange(t *testing.T) {
 	const head = int64(100)
 	api := &PublicFilterAPI{
-		logger:  log.NewNopLogger(),
+		logger:  logv2.NewNopLogger(),
 		backend: &stubBackend{head: head},
 		filters: make(map[rpc.ID]*filter),
 	}
