@@ -28,4 +28,10 @@ func (app *EthermintApp) RegisterUpgradeHandlers() {
 			return app.ModuleManager.RunMigrations(ctx, app.configurator, fromVM)
 		},
 	)
+
+	app.UpgradeKeeper.SetUpgradeHandler("sdk54",
+		func(ctx context.Context, _ upgradetypes.Plan, fromVM module.VersionMap) (module.VersionMap, error) {
+			return app.ModuleManager.RunMigrations(ctx, app.configurator, fromVM)
+		},
+	)
 }
