@@ -84,9 +84,6 @@ type StateDB struct {
 	// cacheLayers is the stack of branches (root first); flushed on Commit, truncated on native revert.
 	cacheLayers []cachemulti.Store
 
-	// commitMS flushes nested native cache layers into the parent multistore.
-	commitMS func()
-
 	// Journal of state modifications. This is the backbone of
 	// Snapshot and RevertToSnapshot.
 	journal        *journal
@@ -124,20 +121,16 @@ func New(ctx sdk.Context, keeper Keeper, txConfig TxConfig) *StateDB {
 }
 
 func NewWithParams(ctx sdk.Context, keeper Keeper, txConfig TxConfig, evmDenom string) *StateDB {
-	var cacheMS cachemulti.Store
+	// Branch the parent multistore. In unit tests the multistore may be uncached, so fall back to CacheWrap.
+	var branched any
 	if parentCacheMS, ok := ctx.MultiStore().(cachemulti.Store); ok {
-		branched, branchOK := parentCacheMS.CacheMultiStore().(cachemulti.Store)
-		if !branchOK {
-			panic("expect CacheMultiStore result to be cachemulti.Store")
-		}
-		cacheMS = branched
+		branched = parentCacheMS.CacheMultiStore()
 	} else {
-		// In unit tests, it can run against an uncached multistore.
-		branched, branchOK := ctx.MultiStore().CacheWrap().(cachemulti.Store)
-		if !branchOK {
-			panic("expect the CacheWrap result to be cachemulti.Store")
-		}
-		cacheMS = branched
+		branched = ctx.MultiStore().CacheWrap()
+	}
+	cacheMS, ok := branched.(cachemulti.Store)
+	if !ok {
+		panic("expect branched multistore to be cachemulti.Store")
 	}
 	db := &StateDB{
 		origCtx:          ctx,
@@ -154,7 +147,6 @@ func NewWithParams(ctx sdk.Context, keeper Keeper, txConfig TxConfig, evmDenom s
 		nativeEvents: sdk.Events{},
 		evmDenom:     evmDenom,
 	}
-	db.commitMS = db.flushNativeCacheLayers
 	db.ctx = ctx.WithValue(StateDBContextKey, db).WithMultiStore(cacheMS)
 	return db
 }
@@ -742,33 +734,39 @@ func (s *StateDB) Commit() error {
 	// A nested native action (via ExecuteNativeAction) commits its writes into s.cacheMS
 	// (readable via s.ctx). If any EVM-dirty key was also written by such an action, the
 	// store value visible through s.ctx will differ from originStorage. Detecting this
-	// before commitMS() means we can abort cleanly — the parent context is never touched.
+	// before flushing means we can abort cleanly — the parent context is never touched.
+	//
+	// Note: only EVM-dirty keys are checked; native-only writes have no EVM dirty bit
+	// and are not in scope.
 	for _, addr := range s.journal.sortedDirties() {
 		obj, exist := s.stateObjects[addr]
 		if !exist || obj.selfDestructed {
 			continue
 		}
 		for _, key := range obj.dirtyStorage.SortedKeys() {
-			if obj.dirtyStorage[key] == obj.originStorage[key] {
+			origin := obj.originStorage[key]
+			dirty := obj.dirtyStorage[key]
+			if dirty == origin {
 				continue
 			}
-			// Conflict: a native action wrote a different value than the EVM for the same slot.
-			// If the store still matches origin, no native write occurred — no conflict.
-			// If the store matches dirty, both sides agree on the final value — no conflict.
-			if storeValue := s.keeper.GetState(s.ctx, obj.Address(), key); storeValue != obj.originStorage[key] && storeValue != obj.dirtyStorage[key] {
+			// A native action wrote this slot iff the store value differs from origin.
+			// If it also differs from the EVM-dirty value, the two sides disagree — conflict.
+			store := s.keeper.GetState(s.ctx, obj.Address(), key)
+			if store != origin && store != dirty {
 				return fmt.Errorf(
 					"%w: address %s key %s modified by both EVM execution and native action (origin=%s, store=%s, dirty=%s)",
 					ErrStateConflict,
-					obj.Address().Hex(), key.Hex(), obj.originStorage[key].Hex(), storeValue.Hex(), obj.dirtyStorage[key].Hex(),
+					obj.Address().Hex(), key.Hex(), origin.Hex(), store.Hex(), dirty.Hex(),
 				)
 			}
 		}
 	}
 
-	// commit the native cache store,
-	// the states managed by precompiles and the other part of StateDB must not overlap.
-	// after this, should only use the `origCtx`.
-	s.commitMS()
+	// Flush all native cache layers bottom-up (deepest child → root → parent).
+	// Uses Write() (incremental flush) rather than the pre-v0.54 Restore() (full state
+	// replacement). Only stores that were actually accessed are flushed; unaccessed stores
+	// are skipped by the cachemulti lazy-init logic.
+	s.flushNativeCacheLayers()
 	if len(s.nativeEvents) > 0 {
 		s.origCtx.EventManager().EmitEvents(s.nativeEvents)
 	}

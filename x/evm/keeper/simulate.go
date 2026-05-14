@@ -401,7 +401,10 @@ func (sim *Simulator) applyCall(
 	} else {
 		if msg.SetCodeAuthorizations != nil {
 			for _, auth := range msg.SetCodeAuthorizations {
-				sim.keeper.applyAuthorization(&auth, sim.state) //nolint:errcheck
+				if err := sim.keeper.applyAuthorization(&auth, sim.state); err != nil {
+					sim.keeper.Logger(sim.state.Context()).Debug("simulation: failed to apply authorization",
+						"error", err, "authorization", auth)
+				}
 			}
 		}
 		ret, leftoverGas, vmErr = evm.Call(msg.From, *msg.To, msg.Data, leftoverGas, value)

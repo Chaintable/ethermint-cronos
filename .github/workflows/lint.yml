@@ -44,7 +44,7 @@ jobs:
         run: |
           SYSTEM_GO=$(which go)
           nix profile add -f ./nix golangci-lint
-          PATH="$(dirname $SYSTEM_GO):$PATH" golangci-lint run
+          PATH="$(dirname "$SYSTEM_GO"):$PATH" golangci-lint run
         # Check only if there are differences in the source code
         if: env.GIT_DIFF
   markdown-lint:

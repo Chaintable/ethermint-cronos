@@ -1102,6 +1102,15 @@ func (suite *StateDBTestSuite) TestSelfDestructNoPostDestructionBalance() {
 	suite.Require().True(balance.IsZero(), "post-selfdestruct balance must be 0 after normal selfdestruct path")
 }
 
+func (suite *StateDBTestSuite) TestDoubleCommit() {
+	_, ctx, keeper := setupTestEnv(suite.T())
+	db := statedb.New(ctx, keeper, emptyTxConfig)
+	suite.Require().NoError(db.Commit())
+	err := db.Commit()
+	suite.Require().Error(err)
+	suite.Require().Contains(err.Error(), "already committed")
+}
+
 func TestStateDBTestSuite(t *testing.T) {
 	suite.Run(t, &StateDBTestSuite{})
 }
