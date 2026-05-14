@@ -28,7 +28,16 @@ let
   patchedGomod2nix = bootstrapPkgs.applyPatches {
     name = "gomod2nix-symlink-dedup";
     src = sources.gomod2nix;
-    patches = [ ./gomod2nix-symlink-dedup.patch ];
+    postPatch = ''
+      python3 -c "
+data = open('builder/symlink/symlink.go').read()
+data = data.replace(
+    '\t\tif err := os.Symlink(innerSrc, dst); err != nil {\n',
+    '\t\tif _, err := os.Lstat(dst); err == nil {\n\t\t\tcontinue\n\t\t}\n\t\tif err := os.Symlink(innerSrc, dst); err != nil {\n'
+)
+open('builder/symlink/symlink.go', 'w').write(data)
+"
+    '';
   };
 in
 import sources.nixpkgs {
