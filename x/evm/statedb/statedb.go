@@ -113,8 +113,9 @@ type StateDB struct {
 	nativeEvents sdk.Events
 
 	// handle balances natively
-	evmDenom string
-	err      error
+	evmDenom  string
+	err       error
+	committed bool
 }
 
 // New creates a new state from a given trie.
@@ -729,6 +730,9 @@ func (s *StateDB) Error() error {
 // Commit writes the dirty states to keeper
 // the StateDB object should be discarded after committed.
 func (s *StateDB) Commit() error {
+	if s.committed {
+		return errors.New("statedb already committed")
+	}
 	// if there's any errors during the execution, abort
 	if s.err != nil {
 		return s.err
@@ -819,6 +823,7 @@ func (s *StateDB) Commit() error {
 			}
 		}
 	}
+	s.committed = true
 	return nil
 }
 

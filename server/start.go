@@ -311,6 +311,10 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 	logger := svrCtx.Logger
 	g, ctx := getCtx(svrCtx, true)
 
+	if svrCtx.Viper.GetString(srvflags.TraceStore) != "" {
+		logger.Error("--trace-store is no longer supported and has no effect; store tracing was removed in the SDK v0.54 migration")
+	}
+
 	db, err := opts.DBOpener(svrCtx.Viper, home, server.GetAppDBBackend(svrCtx.Viper))
 	if err != nil {
 		logger.Error("failed to open DB", "error", err.Error())
