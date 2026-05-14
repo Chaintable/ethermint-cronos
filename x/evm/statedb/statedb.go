@@ -398,6 +398,14 @@ func (s *StateDB) restoreNativeState(previousStore cachemulti.Store, previousLay
 	s.ctx = s.ctx.WithMultiStore(previousStore)
 }
 
+// flushNativeCacheLayers writes native action state bottom-up: deepest child layer
+// first, up to cacheLayers[0] (the root branch created in NewWithParams). The root's
+// Write() propagates into the parent cachemulti.Store that was passed to NewWithParams
+// (i.e. ctx.MultiStore() at StateDB init time), NOT into origCtx directly.
+//
+// EVM-dirty writes in the remainder of Commit() use origCtx, which also targets that
+// same parent store — so native and EVM writes both land in the same underlying store,
+// just through different paths.
 func (s *StateDB) flushNativeCacheLayers() {
 	for i := len(s.cacheLayers) - 1; i >= 0; i-- {
 		s.cacheLayers[i].Write()
@@ -763,10 +771,6 @@ func (s *StateDB) Commit() error {
 		}
 	}
 
-	// Flush all native cache layers bottom-up (deepest child → root → parent).
-	// Uses Write() (incremental flush) rather than the pre-v0.54 Restore() (full state
-	// replacement). Only stores that were actually accessed are flushed; unaccessed stores
-	// are skipped by the cachemulti lazy-init logic.
 	s.flushNativeCacheLayers()
 	if len(s.nativeEvents) > 0 {
 		s.origCtx.EventManager().EmitEvents(s.nativeEvents)
