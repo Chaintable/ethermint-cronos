@@ -725,6 +725,7 @@ func (s *StateDB) Commit() error {
 	if s.committed {
 		return errors.New("statedb already committed")
 	}
+	s.committed = true
 	// if there's any errors during the execution, abort
 	if s.err != nil {
 		return s.err
@@ -821,7 +822,6 @@ func (s *StateDB) Commit() error {
 			}
 		}
 	}
-	s.committed = true
 	return nil
 }
 
