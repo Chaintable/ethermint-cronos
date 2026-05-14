@@ -47,7 +47,7 @@ func newLegacyCosmosAnteHandlerEip712(ctx sdk.Context, options HandlerOptions, e
 		cosmos.NewMinGasPriceDecorator(options.FeeMarketKeeper, evmDenom, &feemarketParams),
 		authante.NewValidateMemoDecorator(options.AccountKeeper),
 		authante.NewConsumeGasForTxSizeDecorator(options.AccountKeeper),
-		evm.NewDeductFeeDecorator(options.AccountKeeper, options.BankKeeper, options.FeegrantKeeper, txFeeChecker),
+		authante.NewDeductFeeDecorator(options.AccountKeeper, options.BankKeeper, options.FeegrantKeeper, txFeeChecker),
 		// SetPubKeyDecorator must be called before all signature verification decorators
 		authante.NewSetPubKeyDecorator(options.AccountKeeper),
 		authante.NewValidateSigCountDecorator(options.AccountKeeper),
