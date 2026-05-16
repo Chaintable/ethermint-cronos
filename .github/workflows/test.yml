@@ -103,6 +103,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-25.11
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+            max-jobs = auto
       - uses: cachix/cachix-action@v17
         with:
           name: crypto-ethermint
@@ -130,6 +131,7 @@ jobs:
 
   upload-cache:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 360
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -141,6 +143,7 @@ jobs:
           nix_path: nixpkgs=channel:nixos-25.11
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+            max-jobs = auto
       - uses: cachix/cachix-action@v17
         with:
           name: crypto-ethermint
