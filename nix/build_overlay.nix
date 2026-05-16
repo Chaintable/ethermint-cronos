@@ -10,9 +10,4 @@ final: super: {
       (f: f != "-DCMAKE_C_FLAGS=-fzero-init-padding-bits=unions")
       (old.cmakeFlags or [ ]);
   });
-  # p11-kit 0.25.10 test-server.sh fails in the nix sandbox because
-  # p11tool isn't on PATH during the build phase.  Skip build tests.
-  p11-kit = super.p11-kit.overrideAttrs (_: {
-    doCheck = false;
-  });
 }
