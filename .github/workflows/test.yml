@@ -5,6 +5,7 @@ on:
     branches:
       - develop
       - release/**
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -128,7 +129,7 @@ jobs:
           if-no-files-found: ignore
 
   upload-cache:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         os: [ubuntu-latest]
