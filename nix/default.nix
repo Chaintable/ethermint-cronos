@@ -29,23 +29,15 @@ let
   # can claim it as a symlink.  The original skip-if-exists patch fixed the
   # "file exists" panic but silently dropped root module content.
   #
-  # This patch replaces os.Symlink with symlinkOrMerge (in a new merge.go):
+  # This patch appends symlinkOrMerge directly into symlink.go (the only file
+  # compiled by gomod2nix-symlink.drv) and replaces os.Symlink with it:
   #   - dst missing       → create symlink as usual
   #   - dst is a symlink  → skip (already claimed by another module)
   #   - dst is a dir      → recurse and symlink each top-level src entry
   #
   # Upstream issue is unfixed as of nix-community/gomod2nix@514283ec.
-  gomod2nixMergeGo = bootstrapPkgs.writeText "merge.go" ''
-    package symlink
+  gomod2nixMergeFunc = bootstrapPkgs.writeText "symlink-merge-func" ''
 
-    import (
-        "os"
-        "path/filepath"
-    )
-
-    // symlinkOrMerge places src at dst as a symlink, or merges src entries
-    // into dst when dst is already a directory (created by MkdirAll for a
-    // sub-module).  If dst is already a symlink another module owns it; skip.
     func symlinkOrMerge(src, dst string) error {
         dstInfo, dstErr := os.Lstat(dst)
         if dstErr != nil {
@@ -64,8 +56,8 @@ let
         }
         for _, entry := range entries {
             if err := symlinkOrMerge(
-                filepath.Join(src, entry.Name()),
-                filepath.Join(dst, entry.Name()),
+                src+"/"+entry.Name(),
+                dst+"/"+entry.Name(),
             ); err != nil {
                 return err
             }
@@ -77,7 +69,7 @@ let
     name = "gomod2nix-symlink-merge";
     src = sources.gomod2nix;
     postPatch = ''
-      cp ${gomod2nixMergeGo} builder/symlink/merge.go
+      cat ${gomod2nixMergeFunc} >> builder/symlink/symlink.go
       substituteInPlace builder/symlink/symlink.go \
         --replace-fail \
         $'\t\tif err := os.Symlink(innerSrc, dst); err != nil {\n' \
