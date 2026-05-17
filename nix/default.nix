@@ -19,20 +19,69 @@ let
                   'manyLinuxTargetMachines = { riscv64 = "riscv64";'
     '';
   };
-  # Patch gomod2nix's symlink builder to skip vendor entries that already exist.
-  # Without this, split-module monorepos (e.g. google.golang.org/genproto +
-  # genproto/googleapis/api) cause "file exists" panics: sub-module symlinks are
-  # placed first, then populateVendorPath tries to re-symlink the same paths
-  # from the parent module's nix store. Upstream issue is unfixed as of
-  # nix-community/gomod2nix@514283ec.
+  # Patch gomod2nix's symlink builder to handle split-module monorepos where
+  # a root module and its sub-modules share a vendor path prefix.
+  # E.g. github.com/aws/aws-sdk-go-v2 (root) + aws-sdk-go-v2/config (sub-module)
+  # both need entries under vendor/github.com/aws/aws-sdk-go-v2/.
+  #
+  # The naive "symlink whole module dir" approach fails because sub-module
+  # MkdirAll creates the parent as a real directory before the root module
+  # can claim it as a symlink.  The original skip-if-exists patch fixed the
+  # "file exists" panic but silently dropped root module content.
+  #
+  # This patch replaces os.Symlink with symlinkOrMerge (in a new merge.go):
+  #   - dst missing       → create symlink as usual
+  #   - dst is a symlink  → skip (already claimed by another module)
+  #   - dst is a dir      → recurse and symlink each top-level src entry
+  #
+  # Upstream issue is unfixed as of nix-community/gomod2nix@514283ec.
+  gomod2nixMergeGo = bootstrapPkgs.writeText "merge.go" ''
+    package symlink
+
+    import (
+        "os"
+        "path/filepath"
+    )
+
+    // symlinkOrMerge places src at dst as a symlink, or merges src entries
+    // into dst when dst is already a directory (created by MkdirAll for a
+    // sub-module).  If dst is already a symlink another module owns it; skip.
+    func symlinkOrMerge(src, dst string) error {
+        dstInfo, dstErr := os.Lstat(dst)
+        if dstErr != nil {
+            return os.Symlink(src, dst)
+        }
+        if dstInfo.Mode()&os.ModeSymlink != 0 {
+            return nil
+        }
+        srcInfo, srcErr := os.Lstat(src)
+        if srcErr != nil || !srcInfo.IsDir() {
+            return nil
+        }
+        entries, err := os.ReadDir(src)
+        if err != nil {
+            return err
+        }
+        for _, entry := range entries {
+            if err := symlinkOrMerge(
+                filepath.Join(src, entry.Name()),
+                filepath.Join(dst, entry.Name()),
+            ); err != nil {
+                return err
+            }
+        }
+        return nil
+    }
+  '';
   patchedGomod2nix = bootstrapPkgs.applyPatches {
-    name = "gomod2nix-symlink-dedup";
+    name = "gomod2nix-symlink-merge";
     src = sources.gomod2nix;
     postPatch = ''
+      cp ${gomod2nixMergeGo} builder/symlink/merge.go
       substituteInPlace builder/symlink/symlink.go \
         --replace-fail \
         $'\t\tif err := os.Symlink(innerSrc, dst); err != nil {\n' \
-        $'\t\tif _, err := os.Lstat(dst); err == nil {\n\t\t\tcontinue\n\t\t}\n\t\tif err := os.Symlink(innerSrc, dst); err != nil {\n'
+        $'\t\tif err := symlinkOrMerge(innerSrc, dst); err != nil {\n'
     '';
   };
 in
