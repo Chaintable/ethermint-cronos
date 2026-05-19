@@ -82,8 +82,7 @@ import sources.nixpkgs {
     (import ./build_overlay.nix)
     (final: super: {
       flake-compat = import sources.flake-compat;
-      # In nixpkgs 25.11 channel HEAD (d7a713c0) with go = go_1_25 at 1.25.9 (set in build_overlay.nix),
-      # buildGoModule already uses Go 1.25.9, so we just use it directly
+      # nixpkgs 25.11 already aliases go = go_1_25 (1.25.9) and buildGoModule = buildGo125Module
       go-ethereum = final.callPackage ./go-ethereum.nix {
         # Skip darwin-specific dependencies to avoid apple_sdk_11_0 errors in nixpkgs 25.11
         libobjc = null;
