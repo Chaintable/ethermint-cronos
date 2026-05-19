@@ -38,6 +38,9 @@ Ref: https://keepachangelog.com/en/1.0.0/
 ## Unreleased
 
 * (deps) [#894](https://github.com/crypto-org-chain/ethermint/pull/894) feat: migrate to Cosmos SDK v0.54.3, IBC v11, CometBFT v0.39.3.
+* (ante) [#948](https://github.com/crypto-org-chain/ethermint/pull/948) fix(ante): enforce eip-1559 cost balance check even if it is not checkTx.
+* (evm) [#948](https://github.com/crypto-org-chain/ethermint/pull/948) fix(evm): fix SetCodeTx nil pointer panics, missing AuthList in Copy.
+* (evm) [#951](https://github.com/crypto-org-chain/ethermint/pull/951) chore(evm): preallocate slices in AccessList conversion functions.
 * (server) [#939](https://github.com/crypto-org-chain/ethermint/pull/939) feat(server): add `index-eth-tx range <start> <end>` subcommand for targeted block re-indexing.
 * (rpc) [#923](https://github.com/crypto-org-chain/ethermint/pull/923) fix(rpc): include block-gas-exceeded txs in `eth_getBlockReceipts` and use block-wide eth `cumulativeGasUsed`.
 * (ci) [#925](https://github.com/crypto-org-chain/ethermint/pull/925) fix(ci): fix dependabot workflows and drain PR backlog
@@ -62,6 +65,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 * (rpc) [#916](https://github.com/crypto-org-chain/ethermint/pull/916) fix(rpc): return InvalidParams error when `eth_getLogs` toBlock exceeds chain head.
 * (evm) [#921](https://github.com/crypto-org-chain/ethermint/pull/921) fix: enforce floor-data-gas
 * (test) [#926](https://github.com/crypto-org-chain/ethermint/pull/926) fix(test): remove flaky `base_fee` assertion in `update_feemarket_param`.
+* (server) [#946](https://github.com/crypto-org-chain/ethermint/pull/946) feat(server): make JSON-RPC batch limits configurable.
 
 ## [v0.23.0] - 2026-01-13
 
