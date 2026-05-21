@@ -305,8 +305,8 @@ github.com/creachadair/tomledit v0.0.29 h1:dB5CbdwJMpn/fmfAPTAAleXF/KJwY0Ggc1eL/
 github.com/creachadair/tomledit v0.0.29/go.mod h1:4SoTXxzHgvzHRMIJPw+o6zK/yXii4VjLrb6/3gCQnyA=
 github.com/creack/pty v1.1.7/go.mod h1:lj5s0c3V2DBrqTV7llrYr5NG6My20zk30Fl46Y7DoTY=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
-github.com/crypto-org-chain/cosmos-sdk v0.50.6-0.20260516212359-db8ba1def35d h1:as1oImpirpsZxxMwlnZDNnmmWtBigzZs5UCw6UHmI6o=
-github.com/crypto-org-chain/cosmos-sdk v0.50.6-0.20260516212359-db8ba1def35d/go.mod h1:Unt21RO+q1EebU6gcUPKYVzpAQSr4KIHjaOmjpz2twA=
+github.com/crypto-org-chain/cosmos-sdk v0.50.6-0.20260521144821-f2bcc1893cf0 h1:aiapiOk1Q6nM61+lP2PTzBmK516HyfrDTPScYcxEGu0=
+github.com/crypto-org-chain/cosmos-sdk v0.50.6-0.20260521144821-f2bcc1893cf0/go.mod h1:Unt21RO+q1EebU6gcUPKYVzpAQSr4KIHjaOmjpz2twA=
 github.com/crypto-org-chain/go-ethereum v1.10.20-0.20250815065500-a4fbafcae0dd h1:ebSnzvM9yKVGFjvoGly7LFQQCS2HuOWMCvQyByJ52Gs=
 github.com/crypto-org-chain/go-ethereum v1.10.20-0.20250815065500-a4fbafcae0dd/go.mod h1:mf8YiHIb0GR4x4TipcvBUPxJLw1mFdmxzoDi11sDRoI=
 github.com/danieljoos/wincred v1.2.3 h1:v7dZC2x32Ut3nEfRH+vhoZGvN72+dQ/snVXo/vMFLdQ=
