@@ -43,6 +43,9 @@ schema = 3
   [mod."cosmossdk.io/errors"]
     version = "v1.1.0"
     hash = "sha256-j4b3rqKIxy7coi9j2v45IYfeIq7VVrviEabO04lCBkk="
+  [mod."cosmossdk.io/log"]
+    version = "v1.4.0"
+    hash = "sha256-f5Ljyr18Dtqj37EwtIIM0QUzVKU/XkBJ8ApnKIZIli8="
   [mod."cosmossdk.io/log/v2"]
     version = "v2.1.0"
     hash = "sha256-gw+YjeHALwuduXGAf+XBZ7RczZZvt6XYkwxVeoDqEtQ="
@@ -52,6 +55,9 @@ schema = 3
   [mod."cosmossdk.io/schema"]
     version = "v1.1.0"
     hash = "sha256-AXXiVWQsEEWe4eRwbFuLsF/dU0dnnK56Zz7e64fLGFA="
+  [mod."cosmossdk.io/store"]
+    version = "v1.1.0"
+    hash = "sha256-CMV+5pn1BP5ixj9pICPlbIQ9Ezy6uP7mwG7SSTXkb3k="
   [mod."cosmossdk.io/tools/confix"]
     version = "v0.1.2"
     hash = "sha256-1VhdIdBDG7jaSiRTNYtoQ3WGaGm+vQ1Qf671zSiWAek="
@@ -87,8 +93,11 @@ schema = 3
     version = "v0.6.2"
     hash = "sha256-tVNWDUMILZbJvarcl/E7tpSnkn7urqgSHa2Eaka5vSU="
   [mod."github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime"]
-    version = "v0.0.0-20251001021608-1fe7b43fc4d6"
-    hash = "sha256-h4q2tJctpX/913sTgr1OJgmrY9gFBv9/+RzvjpYJ+K4="
+    version = "v0.0.0-20260116142910-60249400e523"
+    hash = "sha256-YB2ZfbMIKJ4+Mce44MEtWCftwEKitb4wxh6I38AAIAw="
+  [mod."github.com/RoaringBitmap/roaring/v2"]
+    version = "v2.18.0"
+    hash = "sha256-pD2Rfq6P8CN0WuYgmgto4Ha74q8KG2iHVwTo2oSfRLM="
   [mod."github.com/VictoriaMetrics/fastcache"]
     version = "v1.13.0"
     hash = "sha256-B11EnHNBXrs3ayXVF9OTevYZsPp1E7IwPL+S9/QH+XA="
@@ -246,9 +255,8 @@ schema = 3
     version = "v1.0.0-beta.5"
     hash = "sha256-Fy/PbsOsd6iq0Njy3DVWK6HqWsogI+MkE8QslHGWyVg="
   [mod."github.com/cosmos/cosmos-sdk"]
-    version = "v0.50.6-0.20260521144821-f2bcc1893cf0"
-    hash = "sha256-g5aV6nGUjopIYPPJ9Aa+2KNh3KKYQL33j3MHbI7Dkio="
-    replaced = "github.com/crypto-org-chain/cosmos-sdk"
+    version = "v0.54.3"
+    hash = "sha256-PXDd2CQzJW/UecsfApDF6A8fqy6QZtSQzwqTErlK1mk="
   [mod."github.com/cosmos/cosmos-sdk/store/v2"]
     version = "v2.0.0"
     hash = "sha256-UlKTyyx31e9sd7TH4fH3HlEle92anUoezZm94YQ7r6M="
@@ -848,8 +856,8 @@ schema = 3
     version = "v1.6.0"
     hash = "sha256-LspbjTniiq2xAICSXmgqP7carwlNaLqnCTQfw2pa80A="
   [mod."github.com/supranational/blst"]
-    version = "v0.3.16-0.20250831170142-f48500c1fdbe"
-    hash = "sha256-vhfXG6AUAnZzsy5V8w3bAqaLwkgJhTpE1UDxntfHcts="
+    version = "v0.3.16"
+    hash = "sha256-R4zABpBK/qAjKiMcr+YF4jR7/8jw6yxP+uRPRP7mI1A="
   [mod."github.com/syndtr/goleveldb"]
     version = "v1.0.1-0.20210819022825-2ae1ddf74ef7"
     hash = "sha256-36a4hgVQfwtS2zhylKpQuFhrjdc/Y8pF0dxc26jcZIU="
