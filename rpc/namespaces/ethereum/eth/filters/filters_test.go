@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"cosmossdk.io/log"
 	logv2 "cosmossdk.io/log/v2"
 	abci "github.com/cometbft/cometbft/abci/types"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
@@ -18,8 +17,8 @@ import (
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	gethfilters "github.com/ethereum/go-ethereum/eth/filters"
 	"github.com/ethereum/go-ethereum/rpc"
-	evmtypes "github.com/evmos/ethermint/x/evm/types"
 	"github.com/evmos/ethermint/rpc/types"
+	evmtypes "github.com/evmos/ethermint/x/evm/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -207,7 +206,7 @@ func buildBlockResultsWithLog(t *testing.T, height int64, addr common.Address) *
 
 func TestGetLogs_BlockHashNotFound(t *testing.T) {
 	api := &PublicFilterAPI{
-		logger:  log.NewNopLogger(),
+		logger:  logv2.NewNopLogger(),
 		backend: &stubBackend{head: 100},
 	}
 
@@ -226,7 +225,7 @@ func TestGetLogs_BlockHashFound(t *testing.T) {
 
 	blockRes := buildBlockResultsWithLog(t, height, logAddr)
 	api := &PublicFilterAPI{
-		logger: log.NewNopLogger(),
+		logger: logv2.NewNopLogger(),
 		backend: &blockHashFoundBackend{
 			stubBackend: stubBackend{head: height},
 			blockHash:   filterHash,
