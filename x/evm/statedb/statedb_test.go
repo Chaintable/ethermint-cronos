@@ -89,7 +89,7 @@ func (suite *StateDBTestSuite) TestAccount() {
 
 			// create a contract account
 			db.CreateAccount(address)
-			db.SetCode(address, []byte("hello world"))
+			db.SetCode(address, []byte("hello world"), 0)
 			db.AddBalance(address, uint256.NewInt(100), tracing.BalanceChangeTransfer)
 			db.SetState(address, key1, value1)
 			db.SetState(address, key2, value2)
@@ -296,7 +296,7 @@ func (suite *StateDBTestSuite) TestCode() {
 			db.CreateAccount(address)
 		}, nil, common.BytesToHash(emptyCodeHash)},
 		{"set code", func(db vm.StateDB) {
-			db.SetCode(address, code)
+			db.SetCode(address, code, 0)
 		}, code, codeHash},
 	}
 
@@ -345,11 +345,11 @@ func (suite *StateDBTestSuite) TestRevertSnapshot() {
 			db.CreateAccount(address)
 		}},
 		{"set code", func(db vm.StateDB) {
-			db.SetCode(address, []byte("hello world"))
+			db.SetCode(address, []byte("hello world"), 0)
 		}},
 		{"self destruct", func(db vm.StateDB) {
 			db.SetState(address, v1, v2)
-			db.SetCode(address, []byte("hello world"))
+			db.SetCode(address, []byte("hello world"), 0)
 			db.SelfDestruct(address)
 			suite.Require().True(db.HasSelfDestructed(address))
 		}},
@@ -377,7 +377,7 @@ func (suite *StateDBTestSuite) TestRevertSnapshot() {
 				db := statedb.New(ctx, keeper, emptyTxConfig)
 				db.SetNonce(address, 1, tracing.NonceChangeUnspecified)
 				db.AddBalance(address, uint256.NewInt(100), tracing.BalanceChangeTransfer)
-				db.SetCode(address, []byte("hello world"))
+				db.SetCode(address, []byte("hello world"), 0)
 				db.SetState(address, v1, v2)
 				db.SetNonce(address2, 1, tracing.NonceChangeUnspecified)
 				suite.Require().NoError(db.Commit())
@@ -1046,7 +1046,7 @@ func (suite *StateDBTestSuite) TestSelfDestructPostDestructionBalanceBurned() {
 	db := statedb.New(ctx, keeper, emptyTxConfig)
 	db.CreateAccount(address)
 	db.CreateContract(address)
-	db.SetCode(address, []byte("contract code"))
+	db.SetCode(address, []byte("contract code"), 0)
 	db.AddBalance(address, uint256.NewInt(100), tracing.BalanceChangeTransfer)
 	suite.Require().NoError(db.Commit())
 
@@ -1084,7 +1084,7 @@ func (suite *StateDBTestSuite) TestSelfDestructNoPostDestructionBalance() {
 	db := statedb.New(ctx, keeper, emptyTxConfig)
 	db.CreateAccount(address)
 	db.CreateContract(address)
-	db.SetCode(address, []byte("contract code"))
+	db.SetCode(address, []byte("contract code"), 0)
 	db.AddBalance(address, uint256.NewInt(200), tracing.BalanceChangeTransfer)
 	suite.Require().NoError(db.Commit())
 
