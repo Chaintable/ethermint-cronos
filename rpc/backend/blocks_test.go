@@ -1112,16 +1112,19 @@ func (suite *BackendTestSuite) TestGetEthBlockFromTendermint() {
 				}
 			}
 
-			expBlock = ethrpc.FormatBlock(
-				header,
-				tc.resBlock.Block.Size(),
-				gasLimit,
-				gasUsed,
-				ethRPCTxs,
-				bloom,
-				common.BytesToAddress(tc.validator.Bytes()),
-				tc.baseFee,
-			)
+			var expTxs []*ethtypes.Transaction
+			if tc.expTxs {
+				expTxs = []*ethtypes.Transaction{msgEthereumTx.AsTransaction()}
+			}
+			ethHeader := ethrpc.EthHeaderFromTendermint(header, bloom, tc.baseFee, tc.validator)
+			ethHeader.GasLimit = uint64(gasLimit)
+			ethHeader.GasUsed = gasUsed.Uint64()
+			expEthBlock := ethtypes.NewBlock(ethHeader, &ethtypes.Body{
+				Transactions: expTxs,
+				Uncles:       []*ethtypes.Header{},
+				Withdrawals:  ethtypes.Withdrawals{},
+			}, nil, trie.NewStackTrie(nil))
+			expBlock = ethrpc.FormatBlock(expEthBlock.Header(), header.Hash(), tc.resBlock.Block.Size(), ethRPCTxs)
 
 			if tc.expPass {
 				suite.Require().Equal(expBlock, block)
@@ -1502,6 +1505,7 @@ func (suite *BackendTestSuite) TestEthBlockByNumber() {
 				),
 				&ethtypes.Body{
 					Transactions: []*ethtypes.Transaction{},
+					Withdrawals:  ethtypes.Withdrawals{},
 				},
 				nil,
 				trie.NewStackTrie(nil),
@@ -1531,6 +1535,7 @@ func (suite *BackendTestSuite) TestEthBlockByNumber() {
 				),
 				&ethtypes.Body{
 					Transactions: []*ethtypes.Transaction{msgEthereumTx.AsTransaction()},
+					Withdrawals:  ethtypes.Withdrawals{},
 				},
 				nil,
 				trie.NewStackTrie(nil),
@@ -1605,6 +1610,7 @@ func (suite *BackendTestSuite) TestEthBlockFromTendermintBlock() {
 				),
 				&ethtypes.Body{
 					Transactions: []*ethtypes.Transaction{},
+					Withdrawals:  ethtypes.Withdrawals{},
 				},
 				nil,
 				trie.NewStackTrie(nil),
@@ -1643,6 +1649,7 @@ func (suite *BackendTestSuite) TestEthBlockFromTendermintBlock() {
 				),
 				&ethtypes.Body{
 					Transactions: []*ethtypes.Transaction{msgEthereumTx.AsTransaction()},
+					Withdrawals:  ethtypes.Withdrawals{},
 				},
 				nil,
 				trie.NewStackTrie(nil),
