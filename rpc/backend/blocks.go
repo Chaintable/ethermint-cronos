@@ -493,6 +493,7 @@ func (b *Backend) RPCBlockFromTendermintBlock(
 			ethMsg,
 			common.BytesToHash(block.Hash()),
 			height,
+			safeBlockTime(block.Time.Unix()),
 			index,
 			baseFee,
 			b.chainID,
