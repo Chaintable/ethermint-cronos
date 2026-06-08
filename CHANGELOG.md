@@ -44,6 +44,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 * (ante) [#829](https://github.com/crypto-org-chain/ethermint/pull/829) fix: validate payload messages in legacy EIP-712
 * (evm) [#875](https://github.com/crypto-org-chain/ethermint/pull/875) fix: prevent nil pointer dereference on BLOBBASEFEE opcode 
 * (rpc) [#869](https://github.com/crypto-org-chain/ethermint/pull/869) feat(RPC): implement `eth_simulateV1` RPC
+* (server) [#985](https://github.com/crypto-org-chain/ethermint/pull/985) feat(server): make JSON-RPC batch limits configurable.
 
 ## [v0.23.0] - 2026-01-13
 
