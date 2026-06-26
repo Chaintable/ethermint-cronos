@@ -7,11 +7,36 @@ import (
 
 	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers"
+	"github.com/holiman/uint256"
 )
+
+// mockStateDB implements tracing.StateDB to provide the committed post-tx state
+// that the tracer re-reads in commitStateDiff.
+type mockStateDB struct {
+	state map[common.Address]map[common.Hash]common.Hash
+	nonce map[common.Address]uint64
+	code  map[common.Address][]byte
+	exist map[common.Address]bool
+}
+
+func (m *mockStateDB) GetState(a common.Address, s common.Hash) common.Hash { return m.state[a][s] }
+func (m *mockStateDB) GetNonce(a common.Address) uint64                     { return m.nonce[a] }
+func (m *mockStateDB) GetCode(a common.Address) []byte                      { return m.code[a] }
+func (m *mockStateDB) GetCodeHash(a common.Address) common.Hash {
+	if c := m.code[a]; len(c) > 0 {
+		return crypto.Keccak256Hash(c)
+	}
+	return ethtypes.EmptyCodeHash
+}
+func (m *mockStateDB) Exist(a common.Address) bool                               { return m.exist[a] }
+func (m *mockStateDB) GetBalance(common.Address) *uint256.Int                    { return uint256.NewInt(0) }
+func (m *mockStateDB) GetTransientState(common.Address, common.Hash) common.Hash { return common.Hash{} }
+func (m *mockStateDB) GetRefund() uint64                                         { return 0 }
 
 func newTestTracer(t *testing.T, txHash common.Hash) *tracers.Tracer {
 	t.Helper()
@@ -111,14 +136,22 @@ func TestStateDiff(t *testing.T) {
 	code := []byte{0x60, 0x00}
 	codeHash := crypto.Keccak256Hash(code)
 
+	// committed post-tx state the tracer re-reads in commitStateDiff
+	sdb := &mockStateDB{
+		state: map[common.Address]map[common.Hash]common.Hash{storeAddr: {slot: val}},
+		nonce: map[common.Address]uint64{nonceAddr: 5},
+		code:  map[common.Address][]byte{codeAddr: code},
+		exist: map[common.Address]bool{storeAddr: true, codeAddr: true, nonceAddr: true, deadAddr: false},
+	}
+
 	tr := newTestTracer(t, txHash)
 	h := tr.Hooks
-	h.OnTxStart(nil, ethtypes.NewTx(&ethtypes.LegacyTx{Gas: 100000}), from)
+	h.OnTxStart(&tracing.VMContext{StateDB: sdb}, ethtypes.NewTx(&ethtypes.LegacyTx{Gas: 100000}), from)
 	h.OnEnter(0, byte(vm.CALL), from, storeAddr, nil, 100000, big.NewInt(0))
-	h.OnStorageChange(storeAddr, slot, common.Hash{}, val)
-	h.OnCodeChange(codeAddr, common.Hash{}, nil, codeHash, code)               // deploy (non-empty) -> NewCodes
+	h.OnStorageChange(storeAddr, slot, common.Hash{}, val) // pre=0, committed=42 -> emitted
+	h.OnCodeChange(codeAddr, common.Hash{}, nil, codeHash, code)
 	h.OnNonceChangeV2(nonceAddr, 0, 5, 0)
-	h.OnCodeChange(deadAddr, codeHash, code, ethtypes.EmptyCodeHash, nil)      // selfdestruct (empty) -> deleted
+	h.OnCodeChange(deadAddr, codeHash, code, ethtypes.EmptyCodeHash, nil) // exist=false -> deleted
 	h.OnExit(0, nil, 50000, nil, false)
 	h.OnTxEnd(&ethtypes.Receipt{GasUsed: 60000}, nil)
 
@@ -175,5 +208,48 @@ func TestStateDiff(t *testing.T) {
 	// storage_contracts includes the contract whose storage changed
 	if len(res.StorageContracts) != 1 {
 		t.Errorf("want 1 storage contract, got %v", res.StorageContracts)
+	}
+}
+
+// TestRevertedStateDropped asserts that writes/creates rolled back by a revert do
+// not leak into the state diff: the committed StateDB shows the slot back at its
+// pre-tx value and the created account as non-existent.
+func TestRevertedStateDropped(t *testing.T) {
+	txHash := common.HexToHash("0xad")
+	from := common.HexToAddress("0x1")
+	addr := common.HexToAddress("0x10")
+	created := common.HexToAddress("0x50")
+	slot := common.HexToHash("0x07")
+
+	// committed: slot reverted to its pre-tx value (0); created contract not committed
+	sdb := &mockStateDB{
+		state: map[common.Address]map[common.Hash]common.Hash{addr: {slot: common.Hash{}}},
+		nonce: map[common.Address]uint64{created: 1},
+		exist: map[common.Address]bool{addr: true, created: false},
+	}
+
+	tr := newTestTracer(t, txHash)
+	h := tr.Hooks
+	h.OnTxStart(&tracing.VMContext{StateDB: sdb}, ethtypes.NewTx(&ethtypes.LegacyTx{Gas: 100000}), from)
+	h.OnEnter(0, byte(vm.CALL), from, addr, nil, 100000, big.NewInt(0))
+	h.OnStorageChange(addr, slot, common.Hash{}, common.HexToHash("0x5")) // wrote 5, then reverted
+	h.OnNonceChangeV2(created, 0, 1, 0)                                    // created a contract, then reverted
+	h.OnExit(0, nil, 50000, nil, false)
+	h.OnTxEnd(&ethtypes.Receipt{GasUsed: 60000}, nil)
+
+	raw, _ := tr.GetResult()
+	var res dtypes.TraceResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	sd := res.StateDiff
+
+	if len(sd.StorageDiff) != 0 {
+		t.Errorf("reverted storage write must be dropped (committed == pre), got %+v", sd.StorageDiff)
+	}
+	for _, a := range sd.NewAccounts {
+		if a.Address == crypto.Keccak256Hash(created.Bytes()) {
+			t.Errorf("reverted-create account must not be a NewAccount")
+		}
 	}
 }

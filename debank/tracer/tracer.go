@@ -84,29 +84,43 @@ func (f *callFrame) processOutput(output []byte, err error, reverted bool) {
 // debankTracer collects the DeBank per-tx trace result over the modern
 // core/tracing.Hooks. The lifecycle is driven by go-ethereum hooks instead of
 // the legacy vm.EVMLogger Capture* methods, but the DeBank id/error/pos
-// semantics and the state-diff collection mirror cosmos-evm's tracer verbatim.
+// semantics mirror cosmos-evm's tracer verbatim.
 //
 // native CRO balance is intentionally NOT collected here (OnBalanceChange is
 // not registered): Cronos is bank-backed, so balances are filled at block level
 // from bank events + GetBalance(addr,N) in the pipeline / bankdiff channel.
+//
+// IMPORTANT (committed-only state diff): the On*Change hooks fire at execution
+// time (SetState/SetCode/SetNonce) and RevertToSnapshot does NOT emit a
+// compensating hook, so a write made in a reverted call/tx would otherwise leak.
+// cosmos-evm avoided this because its hooks fired at Commit (committed state). To
+// reproduce that here, the hooks only DISCOVER which (addr,slot)/accounts were
+// touched; the actual values are re-read from the post-execution StateDB at
+// OnTxEnd (see commitStateDiff), so reverted writes are dropped.
 type debankTracer struct {
 	callstack []callFrame
 	gasLimit  uint64
 	ctx       *tracers.Context
+	stateDB   tracing.StateDB // captured at OnTxStart; read for committed state at OnTxEnd
 
 	traces      []dtypes.Trace
 	logs        []dtypes.Event
 	errorTraces []dtypes.Trace
 	errorLogs   []dtypes.Event
 
-	storageChanges map[common.Address]struct{} // contracts whose storage changed
-	// state diff
+	// discovery sets (raw addr/slot); committed values re-read at OnTxEnd.
+	touchedStorage  map[common.Address]map[common.Hash]common.Hash // addr -> slot -> pre-tx value (first prev)
+	touchedAccounts map[common.Address]struct{}                    // accounts with a nonce/code change
+
+	// committed state diff, built by commitStateDiff at OnTxEnd.
+	storageChanges  map[common.Address]struct{} // contracts with a committed storage change
 	DeletedAccounts map[common.Hash]struct{}
 	NewAccounts     map[common.Hash]*dtypes.NewAccount
 	StorageDiff     map[common.Hash]map[common.Hash][]byte
 	NewCodes        map[common.Hash][]byte
 
-	done bool
+	committed bool // commitStateDiff ran (OnTxEnd)
+	done      bool // finalize ran (GetResult)
 }
 
 // newDebankTracer is the tracers.DefaultDirectory ctor for "debankTracer".
@@ -117,6 +131,8 @@ func newDebankTracer(ctx *tracers.Context, _ json.RawMessage, _ *params.ChainCon
 		logs:            make([]dtypes.Event, 0),
 		errorTraces:     make([]dtypes.Trace, 0),
 		errorLogs:       make([]dtypes.Event, 0),
+		touchedStorage:  make(map[common.Address]map[common.Hash]common.Hash),
+		touchedAccounts: make(map[common.Address]struct{}),
 		storageChanges:  make(map[common.Address]struct{}),
 		DeletedAccounts: make(map[common.Hash]struct{}),
 		NewAccounts:     make(map[common.Hash]*dtypes.NewAccount),
@@ -142,8 +158,11 @@ func newDebankTracer(ctx *tracers.Context, _ json.RawMessage, _ *params.ChainCon
 
 // --- call tree channel (modeled on go-ethereum eth/tracers/native/call.go) ---
 
-func (t *debankTracer) OnTxStart(_ *tracing.VMContext, tx *ethtypes.Transaction, _ common.Address) {
+func (t *debankTracer) OnTxStart(env *tracing.VMContext, tx *ethtypes.Transaction, _ common.Address) {
 	t.gasLimit = tx.Gas()
+	if env != nil {
+		t.stateDB = env.StateDB // for committed-state re-read at OnTxEnd
+	}
 }
 
 func (t *debankTracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
@@ -192,12 +211,12 @@ func (t *debankTracer) captureEnd(output []byte, gasUsed uint64, err error, reve
 }
 
 func (t *debankTracer) OnTxEnd(receipt *ethtypes.Receipt, err error) {
-	if err != nil {
-		return
-	}
-	if receipt != nil && len(t.callstack) > 0 {
+	if err == nil && receipt != nil && len(t.callstack) > 0 {
 		t.callstack[0].GasUsed = receipt.GasUsed
 	}
+	// Build the committed state diff now: execution (incl. reverts) is done and
+	// the StateDB holds the values that will commit for this tx.
+	t.commitStateDiff()
 }
 
 func (t *debankTracer) OnLog(log *ethtypes.Log) {
@@ -223,15 +242,18 @@ func (t *debankTracer) OnLog(log *ethtypes.Log) {
 	top.Logs = append(top.Logs, l)
 }
 
-// --- contract state-diff channel (On*Change hooks) ---
+// --- contract state-diff channel: On*Change hooks DISCOVER touched
+// slots/accounts; committed values are re-read in commitStateDiff at OnTxEnd ---
 
-func (t *debankTracer) OnStorageChange(addr common.Address, slot common.Hash, _ common.Hash, value common.Hash) {
-	addrhash := crypto.Keccak256Hash(addr.Bytes())
-	if t.StorageDiff[addrhash] == nil {
-		t.StorageDiff[addrhash] = make(map[common.Hash][]byte)
+func (t *debankTracer) OnStorageChange(addr common.Address, slot common.Hash, prev common.Hash, _ common.Hash) {
+	slots := t.touchedStorage[addr]
+	if slots == nil {
+		slots = make(map[common.Hash]common.Hash)
+		t.touchedStorage[addr] = slots
 	}
-	t.StorageDiff[addrhash][crypto.Keccak256Hash(slot.Bytes())] = value.Bytes()
-	t.storageChanges[addr] = struct{}{}
+	if _, seen := slots[slot]; !seen {
+		slots[slot] = prev // pre-tx value, to drop slots with no net committed change
+	}
 	// mark the executing frame (callstack top) as having changed storage
 	if n := len(t.callstack); n > 0 {
 		t.callstack[n-1].SelfStorageChange = true
@@ -239,39 +261,58 @@ func (t *debankTracer) OnStorageChange(addr common.Address, slot common.Hash, _ 
 	}
 }
 
-// OnCodeChange handles both code deploys and selfdestruct code clears. This
-// go-ethereum fork (Cronos v1.7.8 line) has no OnCodeChangeV2, so HookedStateDB's
-// SetCode (deploy) and SelfDestruct/SelfDestruct6780 (clear) both emit the legacy
-// OnCodeChange. Distinguish by the new code: empty == selfdestruct clear (account
-// removed -> DeletedAccounts), non-empty == deploy (-> NewCodes + CodeHash).
-func (t *debankTracer) OnCodeChange(addr common.Address, _ common.Hash, _ []byte, codeHash common.Hash, code []byte) {
-	if len(code) == 0 || codeHash == ethtypes.EmptyCodeHash {
-		t.DeletedAccounts[crypto.Keccak256Hash(addr.Bytes())] = struct{}{}
+func (t *debankTracer) OnCodeChange(addr common.Address, _ common.Hash, _ []byte, _ common.Hash, _ []byte) {
+	t.touchedAccounts[addr] = struct{}{}
+}
+
+func (t *debankTracer) OnNonceChangeV2(addr common.Address, _ uint64, _ uint64, _ tracing.NonceChangeReason) {
+	t.touchedAccounts[addr] = struct{}{}
+}
+
+// commitStateDiff builds the committed state diff from the post-execution StateDB
+// (reverts already applied), so reverted writes/creates are excluded. Storage is
+// emitted only when the committed value differs from the pre-tx value; an account
+// that no longer exists becomes a DeletedAccount, otherwise its committed
+// nonce/code (Balance left 0, filled by the bank channel) becomes a NewAccount.
+func (t *debankTracer) commitStateDiff() {
+	if t.committed || t.stateDB == nil {
 		return
 	}
-	t.NewCodes[codeHash] = code
-	t.getOrCreateAccount(addr).CodeHash = codeHash
-}
+	t.committed = true
 
-func (t *debankTracer) OnNonceChangeV2(addr common.Address, _ uint64, nonce uint64, _ tracing.NonceChangeReason) {
-	t.getOrCreateAccount(addr).Nonce = nonce
-}
-
-// getOrCreateAccount returns the per-tx NewAccount entry keyed by keccak(addr).
-// Balance stays 0 here; the authoritative native CRO balance is filled at block
-// level by the bank-event channel (GetBalance(addr,N)).
-func (t *debankTracer) getOrCreateAccount(addr common.Address) *dtypes.NewAccount {
-	h := crypto.Keccak256Hash(addr.Bytes())
-	acc, ok := t.NewAccounts[h]
-	if !ok {
-		acc = &dtypes.NewAccount{
-			Address:  h,
-			Balance:  uint256.NewInt(0),
-			CodeHash: ethtypes.EmptyCodeHash,
+	for addr, slots := range t.touchedStorage {
+		addrhash := crypto.Keccak256Hash(addr.Bytes())
+		for slot, pre := range slots {
+			committed := t.stateDB.GetState(addr, slot)
+			if committed == pre {
+				continue // reverted or no net change this tx
+			}
+			if t.StorageDiff[addrhash] == nil {
+				t.StorageDiff[addrhash] = make(map[common.Hash][]byte)
+			}
+			t.StorageDiff[addrhash][crypto.Keccak256Hash(slot.Bytes())] = committed.Bytes()
+			t.storageChanges[addr] = struct{}{}
 		}
-		t.NewAccounts[h] = acc
 	}
-	return acc
+
+	for addr := range t.touchedAccounts {
+		addrhash := crypto.Keccak256Hash(addr.Bytes())
+		if !t.stateDB.Exist(addr) {
+			t.DeletedAccounts[addrhash] = struct{}{}
+			continue
+		}
+		code := t.stateDB.GetCode(addr)
+		codeHash := t.stateDB.GetCodeHash(addr)
+		t.NewAccounts[addrhash] = &dtypes.NewAccount{
+			Address:  addrhash,
+			Balance:  uint256.NewInt(0),
+			Nonce:    t.stateDB.GetNonce(addr),
+			CodeHash: codeHash,
+		}
+		if len(code) > 0 {
+			t.NewCodes[codeHash] = code
+		}
+	}
 }
 
 // --- DeBank semantics (verbatim from cosmos-evm tracer; hook-agnostic) ---
@@ -448,6 +489,7 @@ func (t *debankTracer) finalize() {
 }
 
 func (t *debankTracer) GetResult() (json.RawMessage, error) {
+	t.commitStateDiff() // no-op if OnTxEnd already ran; safety net otherwise
 	t.finalize()
 	result := &dtypes.TraceResult{
 		Traces:           t.traces,
