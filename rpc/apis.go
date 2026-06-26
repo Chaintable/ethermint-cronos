@@ -29,6 +29,7 @@ import (
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/eth/filters"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/net"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/personal"
+	"github.com/evmos/ethermint/rpc/namespaces/ethereum/trace"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/txpool"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/web3"
 	"github.com/evmos/ethermint/rpc/stream"
@@ -49,6 +50,7 @@ const (
 	NetNamespace      = "net"
 	TxPoolNamespace   = "txpool"
 	DebugNamespace    = "debug"
+	TraceNamespace    = "trace"
 
 	apiVersion = "1.0"
 )
@@ -147,6 +149,22 @@ func init() {
 					Namespace: DebugNamespace,
 					Version:   apiVersion,
 					Service:   debug.NewAPI(ctx, evmBackend),
+					Public:    true,
+				},
+			}
+		},
+		TraceNamespace: func(ctx *server.Context,
+			clientCtx client.Context,
+			_ *stream.RPCStream,
+			allowUnprotectedTxs bool,
+			indexer ethermint.EVMTxIndexer,
+		) []rpc.API {
+			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer)
+			return []rpc.API{
+				{
+					Namespace: TraceNamespace,
+					Version:   apiVersion,
+					Service:   trace.NewAPI(ctx, ctx.Logger, evmBackend, clientCtx),
 					Public:    true,
 				},
 			}
