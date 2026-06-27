@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"cosmossdk.io/log"
+	"github.com/bytedance/sonic"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -54,7 +55,7 @@ func NewAPI(
 // DebankBlock replays block N at the N-1 state and returns the DeBank block
 // file + header + RLP-encoded state diff + validation hash. Exposed as the
 // JSON-RPC method `trace_debankBlock`.
-func (api *API) DebankBlock(ctx context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (*dtypes.DebankOutPutJs, error) {
+func (api *API) DebankBlock(ctx context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (json.RawMessage, error) {
 	output, err := api.DebankBlockRaw(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
@@ -63,12 +64,16 @@ func (api *API) DebankBlock(ctx context.Context, blockNrOrHash rpctypes.BlockNum
 	if err != nil {
 		return nil, err
 	}
-	return &dtypes.DebankOutPutJs{
+	// Marshal here with sonic (SIMD/JIT) and return raw JSON, instead of letting
+	// go-ethereum's RPC codec marshal the struct with reflection-based
+	// encoding/json — the trace response (hundreds of traces/events) is the top
+	// CPU consumer. ConfigStd keeps the output byte-compatible with the stdlib.
+	return sonic.ConfigStd.Marshal(&dtypes.DebankOutPutJs{
 		BlockFile:      output.BlockFile,
 		Header:         output.Header,
 		StateDiff:      data,
 		ValidationHash: output.ValidationHash,
-	}, nil
+	})
 }
 
 func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (*dtypes.DebankOutPut, error) {
