@@ -3,6 +3,7 @@ package tracer
 import (
 	"encoding/json"
 	"math/big"
+	"strings"
 	"testing"
 
 	dtypes "github.com/evmos/ethermint/debank/types"
@@ -45,6 +46,53 @@ func newTestTracer(t *testing.T, txHash common.Hash) *tracers.Tracer {
 		t.Fatalf("newDebankTracer: %v", err)
 	}
 	return tr
+}
+
+// TestEventEmissionOrder asserts logs come out in EVM emission order: a parent
+// frame emits log_a, calls a child that emits log_b, then emits log_c. Canonical
+// order is a,b,c — a naive post-order walk (recurse child first) would yield
+// b,a,c and misalign idx with eth logIndex.
+func TestEventEmissionOrder(t *testing.T) {
+	txHash := common.HexToHash("0xee")
+	from := common.HexToAddress("0x1")
+	root := common.HexToAddress("0x2")
+	child := common.HexToAddress("0x3")
+	addrA := common.HexToAddress("0xaaa")
+	addrB := common.HexToAddress("0xbbb")
+	addrC := common.HexToAddress("0xccc")
+	mkLog := func(a common.Address, idx uint) *ethtypes.Log {
+		return &ethtypes.Log{Address: a, Topics: []common.Hash{common.HexToHash("0x1")}, Data: []byte{0x01}, Index: idx}
+	}
+
+	tr := newTestTracer(t, txHash)
+	h := tr.Hooks
+	h.OnTxStart(nil, ethtypes.NewTx(&ethtypes.LegacyTx{Gas: 100000}), from)
+	h.OnEnter(0, byte(vm.CALL), from, root, nil, 100000, big.NewInt(0))
+	h.OnLog(mkLog(addrA, 0))                                       // root log, before subcall
+	h.OnEnter(1, byte(vm.CALL), root, child, nil, 50000, big.NewInt(0))
+	h.OnLog(mkLog(addrB, 1))                                       // child log
+	h.OnExit(1, nil, 21000, nil, false)
+	h.OnLog(mkLog(addrC, 2))                                       // root log, after subcall
+	h.OnExit(0, nil, 50000, nil, false)
+	h.OnTxEnd(&ethtypes.Receipt{GasUsed: 60000}, nil)
+
+	raw, _ := tr.GetResult()
+	var res dtypes.TraceResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(res.Events) != 3 {
+		t.Fatalf("want 3 events, got %d", len(res.Events))
+	}
+	want := []common.Address{addrA, addrB, addrC}
+	for i, w := range want {
+		if res.Events[i].Address != strings.ToLower(w.Hex()) {
+			t.Errorf("event[%d].contract_id = %s, want %s (emission order a,b,c)", i, res.Events[i].Address, strings.ToLower(w.Hex()))
+		}
+		if res.Events[i].ID == "" || res.Events[i].ParentTraceID == "" {
+			t.Errorf("event[%d] id/parent_trace_id must be non-empty", i)
+		}
+	}
 }
 
 // TestCallTree drives a root call with one nested subcall and asserts the

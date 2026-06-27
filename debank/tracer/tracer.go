@@ -397,19 +397,33 @@ func (t *debankTracer) ToTrace(f *callFrame, traceAddress []int64) dtypes.Trace 
 }
 
 func (t *debankTracer) addTraceAndLog(cf *callFrame, traceAddress []int64) {
-	for i := range cf.Calls {
-		cf.Calls[i].ParentTraceID = cf.TraceID
-		cf.Calls[i].TraceID = util.ToHash([]string{t.ctx.TxHash.Hex(), cf.TraceID, fmt.Sprintf("%d", cf.Calls[i].PosInParentTrace)})
-		t.addTraceAndLog(&cf.Calls[i], childTraceAddress(traceAddress, int64(i)))
-	}
-	for i := range cf.Logs {
-		cf.Logs[i].ParentTraceID = cf.TraceID
-		cf.Logs[i].ID = util.ToHash([]string{cf.Logs[i].ParentTraceID, fmt.Sprintf("%d", cf.Logs[i].Position)})
-		if cf.failed() || cf.ParentFailed {
-			cf.Logs[i].LogIndex = 0
-			t.errorLogs = append(t.errorLogs, cf.Logs[i])
+	// Emit this frame's own logs and recurse into child calls in EVM execution
+	// order, so t.logs accumulates in canonical log-index order (a parent log
+	// emitted before a subcall must come before the subcall's logs). cf.Logs and
+	// cf.Calls are each already in ascending insertion order; a log's Position and
+	// a child's PosInParentTrace are both the (calls+logs) count at insertion time,
+	// sharing one coordinate and unique within the frame, so a two-pointer merge by
+	// ascending pos reproduces execution order. (A naive "recurse all children then
+	// append own logs" walk is post-order and misorders logs vs receipt logIndex.)
+	li, ci := 0, 0
+	for li < len(cf.Logs) || ci < len(cf.Calls) {
+		takeLog := ci >= len(cf.Calls) ||
+			(li < len(cf.Logs) && cf.Logs[li].Position < int64(cf.Calls[ci].PosInParentTrace))
+		if takeLog {
+			cf.Logs[li].ParentTraceID = cf.TraceID
+			cf.Logs[li].ID = util.ToHash([]string{cf.Logs[li].ParentTraceID, fmt.Sprintf("%d", cf.Logs[li].Position)})
+			if cf.failed() || cf.ParentFailed {
+				cf.Logs[li].LogIndex = 0
+				t.errorLogs = append(t.errorLogs, cf.Logs[li])
+			} else {
+				t.logs = append(t.logs, cf.Logs[li])
+			}
+			li++
 		} else {
-			t.logs = append(t.logs, cf.Logs[i])
+			cf.Calls[ci].ParentTraceID = cf.TraceID
+			cf.Calls[ci].TraceID = util.ToHash([]string{t.ctx.TxHash.Hex(), cf.TraceID, fmt.Sprintf("%d", cf.Calls[ci].PosInParentTrace)})
+			t.addTraceAndLog(&cf.Calls[ci], childTraceAddress(traceAddress, int64(ci)))
+			ci++
 		}
 	}
 	for i := range cf.Calls {
