@@ -2,6 +2,7 @@ package keeper
 
 import (
 	"fmt"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
@@ -12,9 +13,17 @@ import (
 )
 
 // validateAuthorization validates an EIP-7702 authorization against the state.
-func (k *Keeper) validateAuthorization(auth *types.SetCodeAuthorization, stateDB vm.StateDB) (authority common.Address, err error) {
+//
+// chainID is the EVM chain ID resolved by the caller (cfg.ChainConfig.ChainID).
+// It must NOT use the keeper field k.eip155ChainID: that field is only populated
+// in BeginBlock (WithChainID), so on a query/trace path served by a node that has
+// not run BeginBlock since startup (e.g. a frozen archive) it is nil, and the
+// CmpBig(nil) below dereferences a nil *big.Int and panics — which surfaces as a
+// recovered "nil pointer dereference" for every trace_debankBlock / debug_trace*
+// of a block containing a type-0x4 (EIP-7702) tx.
+func (k *Keeper) validateAuthorization(auth *types.SetCodeAuthorization, stateDB vm.StateDB, chainID *big.Int) (authority common.Address, err error) {
 	// Verify chain ID is null or equal to current chain ID.
-	if !auth.ChainID.IsZero() && auth.ChainID.CmpBig(k.eip155ChainID) != 0 {
+	if !auth.ChainID.IsZero() && auth.ChainID.CmpBig(chainID) != 0 {
 		return authority, core.ErrAuthorizationWrongChainID
 	}
 	// Limit nonce to 2^64-1 per EIP-2681.
@@ -43,8 +52,8 @@ func (k *Keeper) validateAuthorization(auth *types.SetCodeAuthorization, stateDB
 }
 
 // applyAuthorization applies an EIP-7702 code delegation to the state.
-func (k *Keeper) applyAuthorization(auth *types.SetCodeAuthorization, stateDB vm.StateDB) error {
-	authority, err := k.validateAuthorization(auth, stateDB)
+func (k *Keeper) applyAuthorization(auth *types.SetCodeAuthorization, stateDB vm.StateDB, chainID *big.Int) error {
+	authority, err := k.validateAuthorization(auth, stateDB, chainID)
 	if err != nil {
 		return err
 	}

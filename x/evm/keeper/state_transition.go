@@ -463,7 +463,10 @@ func (k *Keeper) ApplyMessageWithConfig(
 		if msg.SetCodeAuthorizations != nil {
 			for _, auth := range msg.SetCodeAuthorizations {
 				// Note errors are ignored, we simply skip invalid authorizations here.
-				k.applyAuthorization(&auth, stateDB) //nolint:errcheck
+				// Pass the EVM chain ID from cfg (set on every tx/query path) rather
+				// than letting validateAuthorization read the BeginBlock-only keeper
+				// field k.eip155ChainID, which is nil on a frozen/query-only node.
+				k.applyAuthorization(&auth, stateDB, cfg.ChainConfig.ChainID) //nolint:errcheck
 			}
 		}
 

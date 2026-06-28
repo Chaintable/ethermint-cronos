@@ -7,8 +7,6 @@ import (
 	"math/big"
 	"strings"
 
-	dtypes "github.com/evmos/ethermint/debank/types"
-	"github.com/evmos/ethermint/debank/util"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -18,6 +16,8 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers"
 	"github.com/ethereum/go-ethereum/params"
+	dtypes "github.com/evmos/ethermint/debank/types"
+	"github.com/evmos/ethermint/debank/util"
 	"github.com/holiman/uint256"
 )
 
@@ -229,6 +229,13 @@ func (t *debankTracer) OnLog(log *ethtypes.Log) {
 	if len(topics) > 0 {
 		selector = topics[0]
 		remainingTopics = topics[1:]
+	}
+	// Defense-in-depth: a log without an enclosing call frame (empty callstack)
+	// would index callstack[-1] and panic. Should not happen once OnEnter fires
+	// for the root frame, but guard so a malformed/edge trace degrades gracefully
+	// instead of taking down the whole trace_debankBlock query.
+	if len(t.callstack) == 0 {
+		return
 	}
 	top := &t.callstack[len(t.callstack)-1]
 	l := dtypes.Event{

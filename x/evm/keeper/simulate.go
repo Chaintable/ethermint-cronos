@@ -389,7 +389,9 @@ func (sim *Simulator) applyCall(
 	} else {
 		if msg.SetCodeAuthorizations != nil {
 			for _, auth := range msg.SetCodeAuthorizations {
-				sim.keeper.applyAuthorization(&auth, sim.state) //nolint:errcheck
+				// chain ID from the EVM config (set on the simulate/query path),
+				// not the BeginBlock-only keeper field — see set_code_authorizations.go.
+				sim.keeper.applyAuthorization(&auth, sim.state, evm.ChainConfig().ChainID) //nolint:errcheck
 			}
 		}
 		ret, leftoverGas, vmErr = evm.Call(msg.From, *msg.To, msg.Data, leftoverGas, value)
