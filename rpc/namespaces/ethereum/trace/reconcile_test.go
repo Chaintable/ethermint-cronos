@@ -120,6 +120,35 @@ func TestReconcileEventContentPositional(t *testing.T) {
 	require.Equal(t, util.ToHash([]string{"root", "1"}), tr.Events[1].ID)
 }
 
+func TestReconcileEventReorderKeepsFrame(t *testing.T) {
+	// The replay emitted the two logs in the opposite order to consensus. Equal
+	// count must NOT positionally staple each log onto source[j]'s frame (the
+	// old bug); content matching keeps each log on its true emitting frame.
+	tr := &dtypes.TraceResult{
+		Traces: []dtypes.Trace{
+			mkTrace("root", "", nil, 0, 100, ""),
+			mkTrace("ca", "root", []int64{0}, 0, 10, ""),
+			mkTrace("cb", "root", []int64{1}, 0, 10, ""),
+		},
+		Events: []dtypes.Event{
+			mkEvent("ca", 0, 0x01, topic), // emitted by frame ca
+			mkEvent("cb", 0, 0x02, topic), // emitted by frame cb
+		},
+	}
+	logs := []*ethtypes.Log{mkLog(0x02, topic), mkLog(0x01, topic)} // consensus order reversed
+	sum := reconcileTx(tr, &consensusReceipt{Status: true, GasUsed: 100, Logs: logs}, 500)
+	require.True(t, sum.EventsRebuilt)
+	require.Zero(t, sum.DroppedEvents)
+	require.Zero(t, sum.RootAttached)
+	require.Len(t, tr.Events, 2)
+	// out[0] carries consensus log0 (data 0x02) -> must inherit frame cb, not ca
+	require.Equal(t, []byte{0x02}, []byte(tr.Events[0].Data))
+	require.Equal(t, "cb", tr.Events[0].ParentTraceID)
+	// out[1] carries consensus log1 (data 0x01) -> frame ca
+	require.Equal(t, []byte{0x01}, []byte(tr.Events[1].Data))
+	require.Equal(t, "ca", tr.Events[1].ParentTraceID)
+}
+
 func TestReconcileEventCountMismatch(t *testing.T) {
 	// replay 多一个事件(丢弃), 共识多一个 replay 没有的(root 挂载)
 	tr := &dtypes.TraceResult{

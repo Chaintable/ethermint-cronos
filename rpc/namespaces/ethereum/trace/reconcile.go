@@ -250,7 +250,6 @@ func eventsMatch(events []dtypes.Event, logs []*ethtypes.Log) bool {
 // when possible; unpaired logs are attached to the root trace at the next
 // free position. Returns (events, dropped replay events, root-attached logs).
 func rebuildEvents(source []dtypes.Event, logs []*ethtypes.Log, rootID string, tr *dtypes.TraceResult) ([]dtypes.Event, int, int) {
-	positional := len(source) == len(logs)
 	matched := make([]bool, len(source))
 
 	// positions already taken under the root: child traces plus every source
@@ -277,26 +276,53 @@ func rebuildEvents(source []dtypes.Event, logs []*ethtypes.Log, rootID string, t
 		return p
 	}
 
+	// Pair each consensus log to the replay event that emitted it, then take
+	// content from consensus. Two passes, so an equal event count can no longer
+	// staple a log onto the wrong frame (the old positional bug where a reordered
+	// replay made source[j] not the emitter of logs[j]):
+	//   1. exact content signature — the true emitter when the replay reproduced
+	//      the log; this alone fixes pure reordering within the tx.
+	//   2. only when the replay and consensus counts match, pair the leftovers in
+	//      order: an equal count means the divergence is content-only (e.g. a
+	//      gaslimit-seeded tokenId), so a leftover log is the same emit as the
+	//      leftover event and inherits its frame.
+	// When the counts differ the sets themselves diverge, so a log matched by
+	// neither pass has no replay emitter and attaches to the root below.
+	srcFor := make([]int, len(logs))
+	for j := range srcFor {
+		srcFor[j] = -1
+	}
+	for j, lg := range logs {
+		want := logSig(lg)
+		for i := range source {
+			if !matched[i] && eventSig(&source[i]) == want {
+				srcFor[j], matched[i] = i, true
+				break
+			}
+		}
+	}
+	if len(source) == len(logs) {
+		si := 0
+		for j := range logs {
+			if srcFor[j] >= 0 {
+				continue
+			}
+			for si < len(source) && matched[si] {
+				si++
+			}
+			if si >= len(source) {
+				break
+			}
+			srcFor[j], matched[si] = si, true
+		}
+	}
+
 	attached := 0
 	out := make([]dtypes.Event, 0, len(logs))
 	for j, lg := range logs {
-		src := -1
-		if positional {
-			src = j
-		} else {
-			want := logSig(lg)
-			for i := range source {
-				if !matched[i] && eventSig(&source[i]) == want {
-					src = i
-					break
-				}
-			}
-		}
-
 		var ev dtypes.Event
-		if src >= 0 {
-			matched[src] = true
-			ev = source[src] // inherit ID/ParentTraceID/Position
+		if src := srcFor[j]; src >= 0 {
+			ev = source[src] // inherit ID/ParentTraceID/Position from the emitter
 		} else {
 			pos := nextRootPos()
 			ev = dtypes.Event{
