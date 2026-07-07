@@ -70,8 +70,13 @@ func (api *API) loadConsensus(blockHeight rpctypes.BlockNumber) (map[string]*con
 	}
 	cons := make(map[string]*consensusReceipt, len(rcpts))
 	for _, rc := range rcpts {
-		hash, ok := rc["transactionHash"].(interface{ Hex() string })
-		if !ok {
+		var key string
+		switch h := rc["transactionHash"].(type) {
+		case interface{ Hex() string }: // common.Hash, what buildReceiptDirect stores today
+			key = strings.ToLower(h.Hex())
+		case string: // tolerate a receipt builder that stores the hex string directly
+			key = strings.ToLower(h)
+		default:
 			return nil, fmt.Errorf("receipt transactionHash has unexpected type %T", rc["transactionHash"])
 		}
 		status, ok := rc["status"].(hexutil.Uint)
@@ -82,8 +87,14 @@ func (api *API) loadConsensus(blockHeight rpctypes.BlockNumber) (map[string]*con
 		if !ok {
 			return nil, fmt.Errorf("receipt gasUsed has unexpected type %T", rc["gasUsed"])
 		}
-		logs, _ := rc["logs"].([]*ethtypes.Log)
-		cons[strings.ToLower(hash.Hex())] = &consensusReceipt{
+		// logs is fail-closed like the fields above: this reconciliation path is
+		// mandatory, so a type mismatch (nil logs) would silently rebuild every
+		// consensus-success tx to zero events instead of loudly aborting.
+		logs, ok := rc["logs"].([]*ethtypes.Log)
+		if !ok {
+			return nil, fmt.Errorf("receipt logs has unexpected type %T", rc["logs"])
+		}
+		cons[key] = &consensusReceipt{
 			Status:  status == hexutil.Uint(ethtypes.ReceiptStatusSuccessful),
 			GasUsed: uint64(gasUsed),
 			Logs:    logs,

@@ -618,7 +618,11 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	signer := ethtypes.MakeSigner(cfg.ChainConfig, big.NewInt(ctx.BlockHeight()), uint64(ctx.BlockTime().Unix())) //#nosec G115
 	txsLength := len(req.Txs)
 	results := make([]*types.TxTraceResult, 0, txsLength)
-	guidance := parseGuidance(req.TraceConfig)
+	guidance, err := parseGuidance(req.TraceConfig)
+	if err != nil {
+		k.Logger(ctx).Error("debank trace: consensus guidance parse failed", "height", ctx.BlockHeight(), "error", err.Error())
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	for i, tx := range req.Txs {
 		result := types.TxTraceResult{}

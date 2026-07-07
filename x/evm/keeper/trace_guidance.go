@@ -30,6 +30,7 @@ package keeper
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -42,6 +43,16 @@ import (
 // guidanceGasCap is the top rung of the retry ladder: far above any real
 // historical consumption, so a consensus-successful tx can never OOG here.
 const guidanceGasCap = 100_000_000
+
+// scaleGasSat returns original*factor saturated at guidanceGasCap. Real gas
+// limits never approach the cap, but the bare multiply is unbounded and would
+// overflow uint64 for a pathological limit; saturating keeps the ladder valid.
+func scaleGasSat(original, factor uint64) uint64 {
+	if original > guidanceGasCap/factor {
+		return guidanceGasCap
+	}
+	return original * factor
+}
 
 type GuidanceLog struct {
 	Address string   `json:"address"`
@@ -61,16 +72,18 @@ type guidanceEnvelope struct {
 
 // parseGuidance extracts consensus guidance from TracerJsonConfig. The field
 // doubles as the (ignored) json config of the debank tracer, so an envelope
-// key namespaces it; absence or malformed JSON simply disables guidance.
-func parseGuidance(tc *types.TraceConfig) []*TxGuidance {
+// key namespaces it. An absent/empty config disables guidance; a non-empty
+// config that will not parse is a broken emitter->keeper contract and returns
+// an error rather than silently degrading to an unreconciled replay.
+func parseGuidance(tc *types.TraceConfig) ([]*TxGuidance, error) {
 	if tc == nil || tc.TracerJsonConfig == "" {
-		return nil
+		return nil, nil
 	}
 	var env guidanceEnvelope
 	if err := json.Unmarshal([]byte(tc.TracerJsonConfig), &env); err != nil {
-		return nil
+		return nil, fmt.Errorf("parse consensus guidance envelope: %w", err)
 	}
-	return env.Guidance
+	return env.Guidance, nil
 }
 
 // guidanceAt returns the guidance entry for tx index i, nil when absent.
@@ -130,7 +143,7 @@ func (k *Keeper) guidedTrace(
 	}
 
 	original := msg.GasLimit
-	ladder := []uint64{original, original * 2, original * 4, guidanceGasCap}
+	ladder := []uint64{original, scaleGasSat(original, 2), scaleGasSat(original, 4), guidanceGasCap}
 	chosen := uint64(0)
 	for _, gl := range ladder {
 		if gl < original {
