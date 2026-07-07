@@ -144,7 +144,8 @@ func (k *Keeper) guidedTrace(
 
 	original := msg.GasLimit
 	ladder := []uint64{original, scaleGasSat(original, 2), scaleGasSat(original, 4), guidanceGasCap}
-	chosen := uint64(0)
+	chosen := uint64(0)        // lowest rung whose logs reproduce consensus (best)
+	firstComplete := uint64(0) // lowest rung that executed without failing (faithful fallback)
 	for _, gl := range ladder {
 		if gl < original {
 			continue
@@ -154,22 +155,42 @@ func (k *Keeper) guidedTrace(
 		if err != nil {
 			continue
 		}
-		if !res.Failed() && logsMatchGuidance(res.Logs, g.Logs) {
+		if res.Failed() {
+			continue
+		}
+		if firstComplete == 0 {
+			firstComplete = gl
+		}
+		if logsMatchGuidance(res.Logs, g.Logs) {
 			chosen = gl
 			break
 		}
 	}
 	if chosen == 0 {
-		// No rung reproduced the consensus logs (e.g. gas-insensitive path
-		// divergence). Commit the highest-gas attempt: the tree stays
-		// complete (no OOG truncation); events/status are anchored to
-		// consensus downstream by the emitter's reconciliation.
-		chosen = guidanceGasCap
-		if original > chosen {
-			chosen = original
+		if firstComplete != 0 {
+			// No rung reproduced the consensus logs, but the tx completes at
+			// firstComplete. Commit the LOWEST completing gas, not the cap: it
+			// is closest to the historical gas budget, so a gas-sensitive
+			// contract keeps the call tree (and internal native transfers) it
+			// actually took on-chain, instead of the divergent branch a huge gas
+			// budget can trigger (a forwarder that stops forwarding, etc.). Only
+			// an original-gas OOG escalates, and no further than needed.
+			// Events/status are anchored to consensus by reconciliation.
+			chosen = firstComplete
+			k.Logger(ctx).Info("debank trace guidance: no gas rung reproduced consensus logs; committing lowest completing gas",
+				"tx", cfg.TxConfig.TxHash.Hex(), "gas_limit", original, "committed", chosen)
+		} else {
+			// The tx fails at every rung up to the cap: under the current binary
+			// there is no faithful tree. Commit the cap for a complete-as-possible
+			// tree, but flag the tx — its internal-transfer tree is reduced
+			// confidence and should be handled/backfilled separately.
+			chosen = guidanceGasCap
+			if original > chosen {
+				chosen = original
+			}
+			k.Logger(ctx).Warn("debank trace guidance: tx unreproducible at every gas rung, committing reduced-confidence tree",
+				"tx", cfg.TxConfig.TxHash.Hex(), "gas_limit", original)
 		}
-		k.Logger(ctx).Info("debank trace guidance: no gas rung reproduced consensus logs",
-			"tx", cfg.TxConfig.TxHash.Hex(), "gas_limit", original)
 	}
 	msg.GasLimit = chosen
 	tr, _, _, err := k.prepareTrace(ctx, cfg, msg, traceConfig, true)
