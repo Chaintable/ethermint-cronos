@@ -500,7 +500,7 @@ func execTrace[T traceRequest](
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	result, _, err := k.prepareTrace(ctx, cfg, msg, req.GetTraceConfig(), false)
+	result, _, _, err := k.prepareTrace(ctx, cfg, msg, req.GetTraceConfig(), false)
 	if err != nil {
 		// error will be returned with detail status from traceTx
 		return nil, err
@@ -618,6 +618,7 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	signer := ethtypes.MakeSigner(cfg.ChainConfig, big.NewInt(ctx.BlockHeight()), uint64(ctx.BlockTime().Unix())) //#nosec G115
 	txsLength := len(req.Txs)
 	results := make([]*types.TxTraceResult, 0, txsLength)
+	guidance := parseGuidance(req.TraceConfig)
 
 	for i, tx := range req.Txs {
 		result := types.TxTraceResult{}
@@ -631,7 +632,15 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 		if err != nil {
 			result.Error = status.Error(codes.Internal, err.Error()).Error()
 		} else {
-			traceResult, logIndex, err := k.prepareTrace(ctx, cfg, msg, req.TraceConfig, true)
+			var (
+				traceResult *interface{}
+				logIndex    uint
+			)
+			if g := guidanceAt(guidance, i); g != nil {
+				traceResult, logIndex, err = k.guidedTrace(ctx, cfg, msg, req.TraceConfig, g)
+			} else {
+				traceResult, logIndex, _, err = k.prepareTrace(ctx, cfg, msg, req.TraceConfig, true)
+			}
 			if err != nil {
 				result.Error = err.Error()
 			} else {
@@ -737,14 +746,15 @@ func newTacer(
 	return tracer, nil
 }
 
-// prepareTrace prepare trace on one Ethereum message, it returns a tuple: (traceResult, nextLogIndex, error).
+// prepareTrace prepare trace on one Ethereum message, it returns a tuple:
+// (traceResult, nextLogIndex, applyResponse, error).
 func (k *Keeper) prepareTrace(
 	ctx sdk.Context,
 	cfg *EVMConfig,
 	msg *core.Message,
 	traceConfig *types.TraceConfig,
 	commitMessage bool,
-) (*interface{}, uint, error) {
+) (*interface{}, uint, *types.EVMResult, error) {
 	txConfig := cfg.TxConfig
 	// Assemble the structured logger or the JavaScript tracer
 	var (
@@ -773,13 +783,13 @@ func (k *Keeper) prepareTrace(
 
 	tracer, err = newTacer(&logConfig, cfg.ChainConfig, txConfig, traceConfig)
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, nil, status.Error(codes.Internal, err.Error())
 	}
 
 	// Define a meaningful timeout of a single transaction trace
 	if traceConfig.Timeout != "" {
 		if timeout, err = time.ParseDuration(traceConfig.Timeout); err != nil {
-			return nil, 0, status.Errorf(codes.InvalidArgument, "timeout value: %s", err.Error())
+			return nil, 0, nil, status.Errorf(codes.InvalidArgument, "timeout value: %s", err.Error())
 		}
 	}
 
@@ -797,7 +807,7 @@ func (k *Keeper) prepareTrace(
 	if traceConfig.StateOverrides != nil {
 		var stateOverrides rpctypes.StateOverride
 		if err := json.Unmarshal(traceConfig.StateOverrides, &stateOverrides); err != nil {
-			return nil, 0, status.Error(codes.InvalidArgument, err.Error())
+			return nil, 0, nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
 		cfg.Overrides = &stateOverrides
@@ -806,7 +816,7 @@ func (k *Keeper) prepareTrace(
 	if traceConfig.BlockOverrides != nil {
 		var blockOverrides rpctypes.BlockOverrides
 		if err := json.Unmarshal(traceConfig.BlockOverrides, &blockOverrides); err != nil {
-			return nil, 0, status.Error(codes.InvalidArgument, err.Error())
+			return nil, 0, nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
 		cfg.BlockOverrides = &blockOverrides
@@ -816,16 +826,16 @@ func (k *Keeper) prepareTrace(
 	cfg.DebugTrace = true
 	res, err := k.ApplyMessageWithConfig(ctx, msg, cfg, commitMessage)
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, nil, status.Error(codes.Internal, err.Error())
 	}
 
 	var result interface{}
 	result, err = tracer.GetResult()
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, nil, status.Error(codes.Internal, err.Error())
 	}
 
-	return &result, txConfig.LogIndex + uint(len(res.Logs)), nil
+	return &result, txConfig.LogIndex + uint(len(res.Logs)), res, nil
 }
 
 // BaseFee implements the Query/BaseFee gRPC method
