@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 
 	"cosmossdk.io/log"
@@ -270,8 +271,30 @@ func (api *API) assembleBlockFile(
 		transactionStates = append(transactionStates, traceResult.StateDiff)
 	}
 
-	for i := range blockFile.Events {
-		blockFile.Events[i].LogIndex = int64(i)
+	// Align event.LogIndex to the chain's native logIndex (what
+	// eth_getBlockReceipts returns), not a fresh 0-based counter, so downstream
+	// can join on it. Reconciliation makes blockFile.Events a 1:1, in-execution-
+	// order image of the block's consensus logs, and the native logIndex is also
+	// block-global in execution order, so pairing the sorted native indices to
+	// the events positionally reproduces the on-chain value (including the old
+	// binary's 1-based / gapped quirks on early blocks). If the counts disagree
+	// (e.g. a tx missing from the consensus map), fall back to 0-based rather
+	// than mis-assign.
+	native := make([]int64, 0, len(blockFile.Events))
+	for _, rc := range consensus {
+		for _, lg := range rc.Logs {
+			native = append(native, int64(lg.Index))
+		}
+	}
+	sort.Slice(native, func(a, b int) bool { return native[a] < native[b] })
+	if len(native) == len(blockFile.Events) {
+		for i := range blockFile.Events {
+			blockFile.Events[i].LogIndex = native[i]
+		}
+	} else {
+		for i := range blockFile.Events {
+			blockFile.Events[i].LogIndex = int64(i)
+		}
 	}
 	return blockFile, transactionStates, fromToAddress, diverged, nil
 }
