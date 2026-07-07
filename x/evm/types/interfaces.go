@@ -20,7 +20,6 @@ import (
 	"math/big"
 
 	"github.com/cosmos/cosmos-sdk/x/auth/ante"
-	consensustypes "github.com/cosmos/cosmos-sdk/x/consensus/types"
 	paramtypes "github.com/cosmos/cosmos-sdk/x/params/types"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -67,15 +66,6 @@ type FeeMarketKeeper interface {
 	GetBlockGasWanted(ctx sdk.Context) uint64
 	CalculateBaseFee(ctx sdk.Context) *big.Int
 	GetParams(ctx sdk.Context) feemarkettypes.Params
-}
-
-// ConsensusParamsKeeper reads the on-chain consensus params. The trace/query
-// path needs it because baseapp only populates ctx.ConsensusParams() during
-// block execution, not for queries — so BlockGasLimit (and thus the GASLIMIT
-// opcode) would otherwise see a zero block gas limit during replay, diverging
-// any contract that reads block.gaslimit.
-type ConsensusParamsKeeper interface {
-	Params(ctx context.Context, req *consensustypes.QueryParamsRequest) (*consensustypes.QueryParamsResponse, error)
 }
 
 // Event Hooks

@@ -31,8 +31,8 @@ import (
 	"google.golang.org/grpc/status"
 
 	sdkmath "cosmossdk.io/math"
+	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	consensustypes "github.com/cosmos/cosmos-sdk/x/consensus/types"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -482,7 +482,10 @@ func execTrace[T traceRequest](
 	ctx = ctx.WithBlockTime(req.GetBlockTime())
 	ctx = ctx.WithHeaderHash(common.Hex2Bytes(req.GetBlockHash()))
 	ctx = ctx.WithProposer(GetProposerAddress(ctx, req.GetProposerAddress()))
-	ctx = k.withQueryConsensusParams(ctx)
+	// TraceBlock/TraceTx carry the block gas limit; TraceCall does not (optional).
+	if r, ok := any(req).(interface{ GetBlockMaxGas() int64 }); ok {
+		ctx = withBlockGasLimit(ctx, r.GetBlockMaxGas())
+	}
 
 	chainID, err := getChainID(ctx, req.GetChainId())
 	if err != nil {
@@ -516,21 +519,24 @@ func execTrace[T traceRequest](
 	return resultData, nil
 }
 
-// withQueryConsensusParams populates ctx.ConsensusParams() on the query/trace
-// path. baseapp sets consensus params only during block execution, not for
-// queries, so without this a replay reads a zero block gas limit — making the
-// GASLIMIT opcode return 0 and diverging any contract that folds block.gaslimit
-// into its execution (e.g. a pseudo-random seed). The consensus params are read
-// at the ctx's (historical) height, so era-correct values are used.
-func (k Keeper) withQueryConsensusParams(ctx sdk.Context) sdk.Context {
-	if k.consensusParamsKeeper == nil {
+// withBlockGasLimit sets the block gas limit on ctx.ConsensusParams() for the
+// query/trace path. baseapp only sets consensus params during block execution,
+// not for queries, so without this a replay reads a zero block gas limit —
+// making the GASLIMIT opcode return 0 and diverging any contract that folds
+// block.gaslimit into its execution (e.g. a pseudo-random seed). maxGas comes
+// from the backend via CometBFT consensus params, which are era-correct and
+// available at every height (unlike the x/consensus module store, which has no
+// entries for blocks predating its migration).
+func withBlockGasLimit(ctx sdk.Context, maxGas int64) sdk.Context {
+	if maxGas <= 0 {
 		return ctx
 	}
-	res, err := k.consensusParamsKeeper.Params(ctx, &consensustypes.QueryParamsRequest{})
-	if err != nil || res == nil || res.Params == nil {
-		return ctx
+	cp := ctx.ConsensusParams()
+	if cp.Block == nil {
+		cp.Block = &cmtproto.BlockParams{}
 	}
-	return ctx.WithConsensusParams(*res.Params)
+	cp.Block.MaxGas = maxGas
+	return ctx.WithConsensusParams(cp)
 }
 
 // TraceTx configures a new tracer according to the provided configuration, and
@@ -624,7 +630,7 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	ctx = ctx.WithBlockTime(req.BlockTime)
 	ctx = ctx.WithHeaderHash(common.Hex2Bytes(req.BlockHash))
 	ctx = ctx.WithProposer(GetProposerAddress(ctx, req.ProposerAddress))
-	ctx = k.withQueryConsensusParams(ctx)
+	ctx = withBlockGasLimit(ctx, req.BlockMaxGas)
 	chainID, err := getChainID(ctx, req.ChainId)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())

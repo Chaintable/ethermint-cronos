@@ -84,11 +84,6 @@ type Keeper struct {
 
 	// queryMaxGasLimit max amount of gas allowed during a single tx execution, 0 means no limit
 	queryMaxGasLimit uint64
-
-	// consensusParamsKeeper reads consensus params on the query/trace path,
-	// where baseapp does not populate ctx.ConsensusParams(); nil disables it
-	// (BlockGasLimit then falls back to 0). Wired via SetConsensusParamsKeeper.
-	consensusParamsKeeper types.ConsensusParamsKeeper
 }
 
 // NewKeeper generates new evm module keeper
@@ -210,14 +205,6 @@ func (k *Keeper) SetHooks(eh types.EvmHooks) *Keeper {
 	}
 
 	k.hooks = eh
-	return k
-}
-
-// SetConsensusParamsKeeper wires the consensus params keeper used by the
-// query/trace path to populate ctx.ConsensusParams() (see grpc_query.go's
-// withQueryConsensusParams). Without it the GASLIMIT opcode reads 0 on replay.
-func (k *Keeper) SetConsensusParamsKeeper(ck types.ConsensusParamsKeeper) *Keeper {
-	k.consensusParamsKeeper = ck
 	return k
 }
 

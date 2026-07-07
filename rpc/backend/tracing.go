@@ -98,6 +98,13 @@ func (b *Backend) TraceTransaction(hash common.Hash, config *rpctypes.TraceConfi
 		return nil, fmt.Errorf("invalid transaction type %T", tx)
 	}
 
+	// Block gas limit from CometBFT consensus params (available at every height,
+	// unlike the x/consensus module store) so the keeper can set it on the trace
+	// ctx and the GASLIMIT opcode is non-zero on replay.
+	blockMaxGas, cpErr := rpctypes.BlockMaxGasFromConsensusParams(b.ctx, b.clientCtx, blk.Block.Height)
+	if cpErr != nil {
+		b.logger.Error("failed to query consensus params for trace tx gas limit", "error", cpErr.Error())
+	}
 	traceTxRequest := evmtypes.QueryTraceTxRequest{
 		Msg:             ethMessage,
 		Predecessors:    predecessors,
@@ -106,6 +113,7 @@ func (b *Backend) TraceTransaction(hash common.Hash, config *rpctypes.TraceConfi
 		BlockHash:       common.Bytes2Hex(blk.BlockID.Hash),
 		ProposerAddress: sdk.ConsAddress(blk.Block.ProposerAddress),
 		ChainId:         b.chainID.Int64(),
+		BlockMaxGas:     blockMaxGas,
 	}
 
 	if config != nil {
@@ -202,6 +210,13 @@ func (b *Backend) TraceBlock(height rpctypes.BlockNumber,
 	}
 	ctxWithHeight := rpctypes.ContextWithHeight(int64(contextHeight))
 
+	// Block gas limit from CometBFT consensus params (available at every height,
+	// unlike the x/consensus module store) so the keeper can set it on the trace
+	// ctx and the GASLIMIT opcode is non-zero on replay.
+	blockMaxGas, cpErr := rpctypes.BlockMaxGasFromConsensusParams(b.ctx, b.clientCtx, block.Block.Height)
+	if cpErr != nil {
+		b.logger.Error("failed to query consensus params for trace block gas limit", "error", cpErr.Error())
+	}
 	traceBlockRequest := &evmtypes.QueryTraceBlockRequest{
 		Txs:             txsMessages,
 		TraceConfig:     b.convertConfig(config),
@@ -210,6 +225,7 @@ func (b *Backend) TraceBlock(height rpctypes.BlockNumber,
 		BlockHash:       common.Bytes2Hex(block.BlockID.Hash),
 		ProposerAddress: sdk.ConsAddress(block.Block.ProposerAddress),
 		ChainId:         b.chainID.Int64(),
+		BlockMaxGas:     blockMaxGas,
 	}
 
 	res, err := b.queryClient.TraceBlock(ctxWithHeight, traceBlockRequest)
