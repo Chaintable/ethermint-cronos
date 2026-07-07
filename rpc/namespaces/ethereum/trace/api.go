@@ -141,6 +141,13 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 		return nil, err
 	}
 
+	// Consensus truth for reconciliation (see reconcile.go): replay under the
+	// current binary can diverge from what old-era consensus recorded.
+	consensus, err := api.loadConsensus(blockHeight)
+	if err != nil {
+		return nil, err
+	}
+
 	transactionStates := make([]dtypes.TransactionStateDiff, 0)
 	fromToAddress := make(map[common.Address]struct{})
 	for i, result := range traceResults {
@@ -163,6 +170,13 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 		// from the tracer's root trace.
 		if i < len(ethMsgs) {
 			realTx := ethMsgs[i].AsTransaction()
+			txHash := strings.ToLower(realTx.Hash().Hex())
+			if sum := reconcileTx(&traceResult, consensus[txHash], realTx.Gas()); sum.changed() {
+				api.logger.Info("debank consensus reconciliation applied",
+					"height", blockHeight, "tx", txHash,
+					"status_flipped", sum.StatusFlipped, "events_rebuilt", sum.EventsRebuilt,
+					"dropped_replay_events", sum.DroppedEvents, "root_attached_logs", sum.RootAttached)
+			}
 			from := senderAt(transactions, i)
 			gasUsed, success := rootGasAndStatus(traceResult)
 			blockFile.Txs = append(blockFile.Txs,
