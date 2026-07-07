@@ -32,6 +32,7 @@ import (
 
 	sdkmath "cosmossdk.io/math"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	consensustypes "github.com/cosmos/cosmos-sdk/x/consensus/types"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -481,6 +482,7 @@ func execTrace[T traceRequest](
 	ctx = ctx.WithBlockTime(req.GetBlockTime())
 	ctx = ctx.WithHeaderHash(common.Hex2Bytes(req.GetBlockHash()))
 	ctx = ctx.WithProposer(GetProposerAddress(ctx, req.GetProposerAddress()))
+	ctx = k.withQueryConsensusParams(ctx)
 
 	chainID, err := getChainID(ctx, req.GetChainId())
 	if err != nil {
@@ -512,6 +514,23 @@ func execTrace[T traceRequest](
 	}
 
 	return resultData, nil
+}
+
+// withQueryConsensusParams populates ctx.ConsensusParams() on the query/trace
+// path. baseapp sets consensus params only during block execution, not for
+// queries, so without this a replay reads a zero block gas limit — making the
+// GASLIMIT opcode return 0 and diverging any contract that folds block.gaslimit
+// into its execution (e.g. a pseudo-random seed). The consensus params are read
+// at the ctx's (historical) height, so era-correct values are used.
+func (k Keeper) withQueryConsensusParams(ctx sdk.Context) sdk.Context {
+	if k.consensusParamsKeeper == nil {
+		return ctx
+	}
+	res, err := k.consensusParamsKeeper.Params(ctx, &consensustypes.QueryParamsRequest{})
+	if err != nil || res == nil || res.Params == nil {
+		return ctx
+	}
+	return ctx.WithConsensusParams(*res.Params)
 }
 
 // TraceTx configures a new tracer according to the provided configuration, and
@@ -605,6 +624,7 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	ctx = ctx.WithBlockTime(req.BlockTime)
 	ctx = ctx.WithHeaderHash(common.Hex2Bytes(req.BlockHash))
 	ctx = ctx.WithProposer(GetProposerAddress(ctx, req.ProposerAddress))
+	ctx = k.withQueryConsensusParams(ctx)
 	chainID, err := getChainID(ctx, req.ChainId)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
