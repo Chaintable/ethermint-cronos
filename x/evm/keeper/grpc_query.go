@@ -31,6 +31,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	sdkmath "cosmossdk.io/math"
+	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -481,6 +482,10 @@ func execTrace[T traceRequest](
 	ctx = ctx.WithBlockTime(req.GetBlockTime())
 	ctx = ctx.WithHeaderHash(common.Hex2Bytes(req.GetBlockHash()))
 	ctx = ctx.WithProposer(GetProposerAddress(ctx, req.GetProposerAddress()))
+	// TraceBlock/TraceTx carry the block gas limit; TraceCall does not (optional).
+	if r, ok := any(req).(interface{ GetBlockMaxGas() int64 }); ok {
+		ctx = withBlockGasLimit(ctx, r.GetBlockMaxGas())
+	}
 
 	chainID, err := getChainID(ctx, req.GetChainId())
 	if err != nil {
@@ -500,7 +505,7 @@ func execTrace[T traceRequest](
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	result, _, err := k.prepareTrace(ctx, cfg, msg, req.GetTraceConfig(), false)
+	result, _, _, err := k.prepareTrace(ctx, cfg, msg, req.GetTraceConfig(), false)
 	if err != nil {
 		// error will be returned with detail status from traceTx
 		return nil, err
@@ -512,6 +517,26 @@ func execTrace[T traceRequest](
 	}
 
 	return resultData, nil
+}
+
+// withBlockGasLimit sets the block gas limit on ctx.ConsensusParams() for the
+// query/trace path. baseapp only sets consensus params during block execution,
+// not for queries, so without this a replay reads a zero block gas limit —
+// making the GASLIMIT opcode return 0 and diverging any contract that folds
+// block.gaslimit into its execution (e.g. a pseudo-random seed). maxGas comes
+// from the backend via CometBFT consensus params, which are era-correct and
+// available at every height (unlike the x/consensus module store, which has no
+// entries for blocks predating its migration).
+func withBlockGasLimit(ctx sdk.Context, maxGas int64) sdk.Context {
+	if maxGas <= 0 {
+		return ctx
+	}
+	cp := ctx.ConsensusParams()
+	if cp.Block == nil {
+		cp.Block = &cmtproto.BlockParams{}
+	}
+	cp.Block.MaxGas = maxGas
+	return ctx.WithConsensusParams(cp)
 }
 
 // TraceTx configures a new tracer according to the provided configuration, and
@@ -605,6 +630,7 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	ctx = ctx.WithBlockTime(req.BlockTime)
 	ctx = ctx.WithHeaderHash(common.Hex2Bytes(req.BlockHash))
 	ctx = ctx.WithProposer(GetProposerAddress(ctx, req.ProposerAddress))
+	ctx = withBlockGasLimit(ctx, req.BlockMaxGas)
 	chainID, err := getChainID(ctx, req.ChainId)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
@@ -618,6 +644,11 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 	signer := ethtypes.MakeSigner(cfg.ChainConfig, big.NewInt(ctx.BlockHeight()), uint64(ctx.BlockTime().Unix())) //#nosec G115
 	txsLength := len(req.Txs)
 	results := make([]*types.TxTraceResult, 0, txsLength)
+	guidance, err := parseGuidance(req.TraceConfig)
+	if err != nil {
+		k.Logger(ctx).Error("debank trace: consensus guidance parse failed", "height", ctx.BlockHeight(), "error", err.Error())
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	for i, tx := range req.Txs {
 		result := types.TxTraceResult{}
@@ -631,7 +662,15 @@ func (k Keeper) TraceBlock(c context.Context, req *types.QueryTraceBlockRequest)
 		if err != nil {
 			result.Error = status.Error(codes.Internal, err.Error()).Error()
 		} else {
-			traceResult, logIndex, err := k.prepareTrace(ctx, cfg, msg, req.TraceConfig, true)
+			var (
+				traceResult *interface{}
+				logIndex    uint
+			)
+			if g := guidanceAt(guidance, i); g != nil {
+				traceResult, logIndex, err = k.guidedTrace(ctx, cfg, msg, req.TraceConfig, g)
+			} else {
+				traceResult, logIndex, _, err = k.prepareTrace(ctx, cfg, msg, req.TraceConfig, true)
+			}
 			if err != nil {
 				result.Error = err.Error()
 			} else {
@@ -737,14 +776,15 @@ func newTacer(
 	return tracer, nil
 }
 
-// prepareTrace prepare trace on one Ethereum message, it returns a tuple: (traceResult, nextLogIndex, error).
+// prepareTrace prepare trace on one Ethereum message, it returns a tuple:
+// (traceResult, nextLogIndex, applyResponse, error).
 func (k *Keeper) prepareTrace(
 	ctx sdk.Context,
 	cfg *EVMConfig,
 	msg *core.Message,
 	traceConfig *types.TraceConfig,
 	commitMessage bool,
-) (*interface{}, uint, error) {
+) (*interface{}, uint, *types.EVMResult, error) {
 	txConfig := cfg.TxConfig
 	// Assemble the structured logger or the JavaScript tracer
 	var (
@@ -773,13 +813,13 @@ func (k *Keeper) prepareTrace(
 
 	tracer, err = newTacer(&logConfig, cfg.ChainConfig, txConfig, traceConfig)
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, nil, status.Error(codes.Internal, err.Error())
 	}
 
 	// Define a meaningful timeout of a single transaction trace
 	if traceConfig.Timeout != "" {
 		if timeout, err = time.ParseDuration(traceConfig.Timeout); err != nil {
-			return nil, 0, status.Errorf(codes.InvalidArgument, "timeout value: %s", err.Error())
+			return nil, 0, nil, status.Errorf(codes.InvalidArgument, "timeout value: %s", err.Error())
 		}
 	}
 
@@ -797,7 +837,7 @@ func (k *Keeper) prepareTrace(
 	if traceConfig.StateOverrides != nil {
 		var stateOverrides rpctypes.StateOverride
 		if err := json.Unmarshal(traceConfig.StateOverrides, &stateOverrides); err != nil {
-			return nil, 0, status.Error(codes.InvalidArgument, err.Error())
+			return nil, 0, nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
 		cfg.Overrides = &stateOverrides
@@ -806,7 +846,7 @@ func (k *Keeper) prepareTrace(
 	if traceConfig.BlockOverrides != nil {
 		var blockOverrides rpctypes.BlockOverrides
 		if err := json.Unmarshal(traceConfig.BlockOverrides, &blockOverrides); err != nil {
-			return nil, 0, status.Error(codes.InvalidArgument, err.Error())
+			return nil, 0, nil, status.Error(codes.InvalidArgument, err.Error())
 		}
 
 		cfg.BlockOverrides = &blockOverrides
@@ -816,16 +856,16 @@ func (k *Keeper) prepareTrace(
 	cfg.DebugTrace = true
 	res, err := k.ApplyMessageWithConfig(ctx, msg, cfg, commitMessage)
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, nil, status.Error(codes.Internal, err.Error())
 	}
 
 	var result interface{}
 	result, err = tracer.GetResult()
 	if err != nil {
-		return nil, 0, status.Error(codes.Internal, err.Error())
+		return nil, 0, nil, status.Error(codes.Internal, err.Error())
 	}
 
-	return &result, txConfig.LogIndex + uint(len(res.Logs)), nil
+	return &result, txConfig.LogIndex + uint(len(res.Logs)), res, nil
 }
 
 // BaseFee implements the Query/BaseFee gRPC method

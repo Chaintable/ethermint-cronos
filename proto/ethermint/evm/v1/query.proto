@@ -301,6 +301,9 @@ message QueryTraceTxRequest {
   int64 chain_id = 9;
   // base_fee is the base fee based on the block_number of requested transaction
   string base_fee = 10 [(gogoproto.customtype) = "cosmossdk.io/math.Int"];
+  // block_max_gas is the block gas limit from consensus params (DeBank: needed
+  // so the GASLIMIT opcode is non-zero on the query/trace path)
+  int64 block_max_gas = 11;
 }
 
 // QueryTraceTxResponse defines TraceTx response
@@ -351,6 +354,9 @@ message QueryTraceBlockRequest {
   bytes proposer_address = 8 [(gogoproto.casttype) = "github.com/cosmos/cosmos-sdk/types.ConsAddress"];
   // chain_id is the eip155 chain id parsed from the requested block header
   int64 chain_id = 9;
+  // block_max_gas is the block gas limit from consensus params (DeBank: needed
+  // so the GASLIMIT opcode is non-zero on the query/trace path)
+  int64 block_max_gas = 10;
 }
 
 // QueryTraceBlockResponse defines TraceBlock response
