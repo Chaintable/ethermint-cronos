@@ -95,7 +95,12 @@ func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
 	return &blockHeader
 }
 
-func BuildBlockStateDiff(parentRoot common.Hash, root common.Hash, diffs []dtypes.TransactionStateDiff, canonicalStorage []dtypes.AccountStorageDiff) dtypes.BlockStorageDiff {
+func BuildBlockStateDiff(
+	parentRoot common.Hash,
+	root common.Hash,
+	diffs []dtypes.TransactionStateDiff,
+	canonicalStorage []dtypes.AccountStorageDiff,
+) dtypes.BlockStorageDiff {
 	storageDiff := dtypes.BlockStorageDiff{
 		Hash:            root,
 		ParentHash:      parentRoot,
