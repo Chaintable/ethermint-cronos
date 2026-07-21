@@ -294,4 +294,4 @@ replace (
 	github.com/tidwall/btree => github.com/crypto-org-chain/btree v0.0.0-20240406140148-2687063b042c
 )
 
-replace github.com/cosmos/iavl => github.com/Chaintable/iavl v1.2.3-0.20260721202009-92988355c428
+replace github.com/cosmos/iavl => github.com/Chaintable/iavl v1.2.7-0.20260721202905-161a37b700c6
