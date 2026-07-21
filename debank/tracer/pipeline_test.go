@@ -3,16 +3,15 @@ package tracer
 import (
 	"testing"
 
-	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/ethereum/go-ethereum/common"
+	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/holiman/uint256"
 )
 
 func hash(b byte) common.Hash { return common.BytesToHash([]byte{b}) }
 
-// TestBuildBlockStateDiff covers the block-level merge rules: storage
-// last-write-wins, DeletedAccount cancelled by a later NewAccount, and storage
-// Values sorted by Index.Hex().
+// TestBuildBlockStateDiff covers the block-level merge rules: canonical storage
+// is used unchanged and a DeletedAccount is cancelled by a later NewAccount.
 func TestBuildBlockStateDiff(t *testing.T) {
 	accA, accB := hash(0xA), hash(0xB)
 	slot1, slot2 := hash(0x01), hash(0x02)
@@ -37,7 +36,10 @@ func TestBuildBlockStateDiff(t *testing.T) {
 		},
 	}
 
-	out := BuildBlockStateDiff(hash(0x22), hash(0x33), diffs)
+	canonicalStorage := []dtypes.AccountStorageDiff{{Address: accB, Values: []dtypes.IndexValuePair{
+		{Index: slot2, Value: uint256.NewInt(30)},
+	}}}
+	out := BuildBlockStateDiff(hash(0x22), hash(0x33), diffs, canonicalStorage)
 
 	// B was deleted then re-created -> not in DeletedAccounts
 	if len(out.DeletedAccounts) != 0 {
@@ -47,20 +49,7 @@ func TestBuildBlockStateDiff(t *testing.T) {
 	if len(out.NewAccounts) != 2 {
 		t.Fatalf("want 2 new accounts, got %d", len(out.NewAccounts))
 	}
-	// storage A: slot1 last-write-wins = 20, slot2 = 99, sorted by Index.Hex()
-	if len(out.StorageDiff) != 1 {
-		t.Fatalf("want 1 storage account, got %d", len(out.StorageDiff))
-	}
-	vals := out.StorageDiff[0].Values
-	if len(vals) != 2 {
-		t.Fatalf("want 2 slots, got %d", len(vals))
-	}
-	if vals[0].Index.Hex() >= vals[1].Index.Hex() {
-		t.Errorf("storage values not sorted by Index.Hex(): %s then %s", vals[0].Index.Hex(), vals[1].Index.Hex())
-	}
-	for _, kv := range vals {
-		if kv.Index == slot1 && kv.Value.Uint64() != 20 {
-			t.Errorf("slot1 last-write-wins failed: got %d want 20", kv.Value.Uint64())
-		}
+	if len(out.StorageDiff) != 1 || out.StorageDiff[0].Address != accB || out.StorageDiff[0].Values[0].Value.Uint64() != 30 {
+		t.Fatalf("canonical storage was not preserved: %#v", out.StorageDiff)
 	}
 }

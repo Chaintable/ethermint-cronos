@@ -2,16 +2,14 @@ package tracer
 
 import (
 	"math/big"
-	"sort"
 	"strings"
 	"time"
 
-	dtypes "github.com/evmos/ethermint/debank/types"
-	evmtypes "github.com/evmos/ethermint/x/evm/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/holiman/uint256"
+	dtypes "github.com/evmos/ethermint/debank/types"
+	evmtypes "github.com/evmos/ethermint/x/evm/types"
 )
 
 func BuildPipelineBlock(rawBlock map[string]interface{}) dtypes.Block {
@@ -97,25 +95,22 @@ func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
 	return &blockHeader
 }
 
-func BuildBlockStateDiff(parentRoot common.Hash, root common.Hash, diffs []dtypes.TransactionStateDiff) dtypes.BlockStorageDiff {
+func BuildBlockStateDiff(parentRoot common.Hash, root common.Hash, diffs []dtypes.TransactionStateDiff, canonicalStorage []dtypes.AccountStorageDiff) dtypes.BlockStorageDiff {
 	storageDiff := dtypes.BlockStorageDiff{
 		Hash:            root,
 		ParentHash:      parentRoot,
 		NewAccounts:     make([]dtypes.NewAccount, 0),
 		NewCodes:        make([]dtypes.NewCode, 0),
 		DeletedAccounts: make([]common.Hash, 0),
-		StorageDiff:     make([]dtypes.AccountStorageDiff, 0),
+		StorageDiff:     canonicalStorage,
 	}
 	newAccountMap := make(map[common.Hash]dtypes.NewAccount)
 	deleteAccountMap := make(map[common.Hash]struct{})
 	codeMap := make(map[common.Hash]dtypes.NewCode)
 
-	mergedStorage := make(map[common.Hash]map[common.Hash]*uint256.Int)
-
 	for _, diff := range diffs {
 		for _, deletedAccount := range diff.DeletedAccounts {
 			delete(newAccountMap, deletedAccount)
-			delete(mergedStorage, deletedAccount)
 			deleteAccountMap[deletedAccount] = struct{}{}
 		}
 
@@ -125,15 +120,6 @@ func BuildBlockStateDiff(parentRoot common.Hash, root common.Hash, diffs []dtype
 		for _, newAccount := range diff.NewAccounts {
 			newAccountMap[newAccount.Address] = newAccount
 			delete(deleteAccountMap, newAccount.Address)
-		}
-		for _, accountStorageDiff := range diff.StorageDiff {
-			addr := accountStorageDiff.Address
-			if mergedStorage[addr] == nil {
-				mergedStorage[addr] = make(map[common.Hash]*uint256.Int)
-			}
-			for _, kv := range accountStorageDiff.Values {
-				mergedStorage[addr][kv.Index] = kv.Value
-			}
 		}
 	}
 
@@ -145,25 +131,6 @@ func BuildBlockStateDiff(parentRoot common.Hash, root common.Hash, diffs []dtype
 	}
 	for _, code := range codeMap {
 		storageDiff.NewCodes = append(storageDiff.NewCodes, code)
-	}
-
-	for addr, slots := range mergedStorage {
-		accountDiff := dtypes.AccountStorageDiff{
-			Address: addr,
-			Values:  make([]dtypes.IndexValuePair, 0, len(slots)),
-		}
-		for index, value := range slots {
-			accountDiff.Values = append(accountDiff.Values, dtypes.IndexValuePair{
-				Index: index,
-				Value: value,
-			})
-		}
-
-		sort.Slice(accountDiff.Values, func(i, j int) bool {
-			return accountDiff.Values[i].Index.Hex() < accountDiff.Values[j].Index.Hex()
-		})
-
-		storageDiff.StorageDiff = append(storageDiff.StorageDiff, accountDiff)
 	}
 
 	return storageDiff

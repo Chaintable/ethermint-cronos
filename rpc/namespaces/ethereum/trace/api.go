@@ -22,6 +22,7 @@ import (
 	"github.com/holiman/uint256"
 
 	"github.com/evmos/ethermint/debank/bankdiff"
+	"github.com/evmos/ethermint/debank/statediff"
 	dtracer "github.com/evmos/ethermint/debank/tracer"
 	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/evmos/ethermint/rpc/backend"
@@ -36,6 +37,7 @@ type API struct {
 	backend     backend.EVMBackend
 	clientCtx   client.Context
 	queryClient *rpctypes.QueryClient
+	stateSource statediff.StateChangeSource
 }
 
 // NewAPI creates the trace namespace API.
@@ -44,6 +46,7 @@ func NewAPI(
 	logger log.Logger,
 	backend backend.EVMBackend,
 	clientCtx client.Context,
+	stateSource statediff.StateChangeSource,
 ) *API {
 	return &API{
 		ctx:         ctx,
@@ -51,6 +54,7 @@ func NewAPI(
 		backend:     backend,
 		clientCtx:   clientCtx,
 		queryClient: rpctypes.NewQueryClient(clientCtx),
+		stateSource: stateSource,
 	}
 }
 
@@ -172,7 +176,11 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 		}
 	}
 
-	stateDiff := dtracer.BuildBlockStateDiff(parentHeader.Root, stateHeader.StateRoot, transactionStates)
+	canonicalStorage, err := statediff.CanonicalStorageAt(api.stateSource, int64(blockHeight))
+	if err != nil {
+		return nil, fmt.Errorf("load canonical storage diff for block %d: %w", blockHeight, err)
+	}
+	stateDiff := dtracer.BuildBlockStateDiff(parentHeader.Root, stateHeader.StateRoot, transactionStates, canonicalStorage)
 
 	// Native CRO balance channel: bank events surface addresses the EVM tracer
 	// never sees (gas/fee, plain transfers, CRC20 convert, IBC, module accounts).
