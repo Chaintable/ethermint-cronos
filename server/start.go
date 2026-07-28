@@ -682,22 +682,28 @@ type namedCommitMultiStore interface {
 	StoreKeysByName() map[string]storetypes.StoreKey
 }
 
-func resolveStateChangeSource(app types.Application) (statediff.StateChangeSource, error) {
+func resolveStateChangeSource(app types.Application, codec codec.Codec) (statediff.StateChangeSource, error) {
 	cms := app.CommitMultiStore()
 	named, ok := cms.(namedCommitMultiStore)
 	if !ok {
 		return nil, fmt.Errorf("trace namespace requires a named commit multi-store, got %T", cms)
 	}
-	evmKey, ok := named.StoreKeysByName()["evm"]
-	if !ok {
-		return nil, fmt.Errorf("trace namespace requires the evm store")
+	stores := make(map[string]*iavlstore.Store, 3)
+	for _, name := range []string{"acc", "bank", "evm"} {
+		key, found := named.StoreKeysByName()[name]
+		if !found {
+			return nil, fmt.Errorf("trace namespace requires the %s store", name)
+		}
+		commitStore := cms.GetCommitKVStore(key)
+		store, found := commitStore.(*iavlstore.Store)
+		if !found {
+			return nil, fmt.Errorf("trace namespace requires a standard IAVL %s store, got %T", name, commitStore)
+		}
+		stores[name] = store
 	}
-	commitStore := cms.GetCommitKVStore(evmKey)
-	evmStore, ok := commitStore.(*iavlstore.Store)
-	if !ok {
-		return nil, fmt.Errorf("trace namespace requires a standard IAVL evm store, got %T", commitStore)
-	}
-	return statediff.NewIAVLStateChangeSource(named, evmStore), nil
+	return statediff.NewIAVLStateChangeSource(
+		named, codec, stores["acc"], stores["bank"], stores["evm"],
+	), nil
 }
 
 func namespaceEnabled(namespaces []string, target string) bool {

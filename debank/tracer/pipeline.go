@@ -98,45 +98,14 @@ func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
 func BuildBlockStateDiff(
 	parentRoot common.Hash,
 	root common.Hash,
-	diffs []dtypes.TransactionStateDiff,
-	canonicalStorage []dtypes.AccountStorageDiff,
+	canonical dtypes.TransactionStateDiff,
 ) dtypes.BlockStorageDiff {
-	storageDiff := dtypes.BlockStorageDiff{
+	return dtypes.BlockStorageDiff{
 		Hash:            root,
 		ParentHash:      parentRoot,
-		NewAccounts:     make([]dtypes.NewAccount, 0),
-		NewCodes:        make([]dtypes.NewCode, 0),
-		DeletedAccounts: make([]common.Hash, 0),
-		StorageDiff:     canonicalStorage,
+		NewAccounts:     canonical.NewAccounts,
+		DeletedAccounts: canonical.DeletedAccounts,
+		StorageDiff:     canonical.StorageDiff,
+		NewCodes:        canonical.NewCodes,
 	}
-	newAccountMap := make(map[common.Hash]dtypes.NewAccount)
-	deleteAccountMap := make(map[common.Hash]struct{})
-	codeMap := make(map[common.Hash]dtypes.NewCode)
-
-	for _, diff := range diffs {
-		for _, deletedAccount := range diff.DeletedAccounts {
-			delete(newAccountMap, deletedAccount)
-			deleteAccountMap[deletedAccount] = struct{}{}
-		}
-
-		for _, newCode := range diff.NewCodes {
-			codeMap[newCode.CodeHash] = newCode
-		}
-		for _, newAccount := range diff.NewAccounts {
-			newAccountMap[newAccount.Address] = newAccount
-			delete(deleteAccountMap, newAccount.Address)
-		}
-	}
-
-	for deleteAccount := range deleteAccountMap {
-		storageDiff.DeletedAccounts = append(storageDiff.DeletedAccounts, deleteAccount)
-	}
-	for _, account := range newAccountMap {
-		storageDiff.NewAccounts = append(storageDiff.NewAccounts, account)
-	}
-	for _, code := range codeMap {
-		storageDiff.NewCodes = append(storageDiff.NewCodes, code)
-	}
-
-	return storageDiff
 }

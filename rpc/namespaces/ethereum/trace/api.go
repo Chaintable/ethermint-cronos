@@ -17,9 +17,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/holiman/uint256"
 
 	"github.com/evmos/ethermint/debank/bankdiff"
 	"github.com/evmos/ethermint/debank/statediff"
@@ -144,7 +142,7 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 		return nil, err
 	}
 
-	blockFile, transactionStates, fromToAddress, diverged, err := api.assembleBlockFile(
+	blockFile, _, fromToAddress, diverged, err := api.assembleBlockFile(
 		blockHeight, block, transactions, ethMsgs, baseFee, traceResults, consensus)
 	if err != nil {
 		return nil, err
@@ -169,35 +167,39 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 		if err != nil {
 			return nil, err
 		}
-		blockFile, transactionStates, fromToAddress, _, err = api.assembleBlockFile(
+		blockFile, _, fromToAddress, _, err = api.assembleBlockFile(
 			blockHeight, block, transactions, ethMsgs, baseFee, traceResults, consensus)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	canonicalStorage, err := statediff.CanonicalStorageAt(api.stateSource, int64(blockHeight))
-	if err != nil {
-		return nil, fmt.Errorf("load canonical storage diff for block %d: %w", blockHeight, err)
-	}
-	stateDiff := dtracer.BuildBlockStateDiff(parentHeader.Root, stateHeader.StateRoot, transactionStates, canonicalStorage)
-
-	// Native CRO balance channel: bank events surface addresses the EVM tracer
-	// never sees (gas/fee, plain transfers, CRC20 convert, IBC, module accounts).
 	evmDenom, err := api.evmDenom(blockHeight)
 	if err != nil {
 		return nil, err
 	}
+	previousDenom, err := api.evmDenom(blockHeight - 1)
+	if err != nil {
+		return nil, err
+	}
+	if previousDenom != evmDenom {
+		return nil, fmt.Errorf(
+			"evm denom changed at block %d from %s to %s", blockHeight, previousDenom, evmDenom,
+		)
+	}
+	canonical, err := statediff.CanonicalStateAt(api.stateSource, int64(blockHeight), evmDenom)
+	if err != nil {
+		return nil, fmt.Errorf("load canonical state diff for block %d: %w", blockHeight, err)
+	}
+	stateDiff := dtracer.BuildBlockStateDiff(parentHeader.Root, stateHeader.StateRoot, canonical)
+
+	// Preserve the existing BlockFile.StorageContracts discovery from tx and
+	// native-CRO bank-event addresses; it no longer supplies stateDiff accounts.
 	for addr := range bankdiff.CoinTouchedAddresses(blockRes, evmDenom) {
 		fromToAddress[addr] = struct{}{}
 	}
 
-	newAccounts, storageContracts, err := api.fillAbsoluteState(fromToAddress, stateDiff.NewAccounts, blockFile.StorageContracts, blockHeight)
-	if err != nil {
-		return nil, err
-	}
-	stateDiff.NewAccounts = newAccounts
-	blockFile.StorageContracts = storageContracts
+	blockFile.StorageContracts = mergeStorageContracts(fromToAddress, blockFile.StorageContracts)
 
 	return &dtypes.DebankOutPut{
 		BlockFile:      blockFile,
@@ -339,51 +341,20 @@ func buildGuidanceJSON(ethMsgs []*evmtypes.MsgEthereumTx, consensus map[string]*
 	return json.Marshal(map[string]interface{}{"debankConsensusGuidance": guidance})
 }
 
-// fillAbsoluteState overwrites/adds NewAccount entries with the authoritative
-// post-N balance/nonce/code (via GetBalance/GetTransactionCount/GetCode at N)
-// for every discovered address: tx from/to plus bank-event touched addresses.
-// This is cosmos-evm's addGasUsedStateDiff generalized to the bank channel.
-func (api *API) fillAbsoluteState(addresses map[common.Address]struct{}, newAccount []dtypes.NewAccount, storageChange []string, number rpctypes.BlockNumber) ([]dtypes.NewAccount, []string, error) {
-	newAccountMap := make(map[common.Hash]dtypes.NewAccount)
+func mergeStorageContracts(addresses map[common.Address]struct{}, storageChange []string) []string {
 	storageChangeMap := make(map[common.Address]struct{})
-	for _, account := range newAccount {
-		newAccountMap[account.Address] = account
-	}
 	for _, address := range storageChange {
 		storageChangeMap[common.HexToAddress(address)] = struct{}{}
 	}
 	for addr := range addresses {
-		addrHash := crypto.Keccak256Hash(addr.Bytes())
-		balance, err := api.backend.GetBalance(addr, rpctypes.BlockNumberOrHash{BlockNumber: &number})
-		if err != nil {
-			return nil, nil, err
-		}
-		nonce, err := api.backend.GetTransactionCount(addr, number)
-		if err != nil {
-			return nil, nil, err
-		}
-		code, err := api.backend.GetCode(addr, rpctypes.BlockNumberOrHash{BlockNumber: &number})
-		if err != nil {
-			return nil, nil, err
-		}
-		newAccountMap[addrHash] = dtypes.NewAccount{
-			Address:  addrHash,
-			Balance:  uint256.MustFromBig((*big.Int)(balance)),
-			Nonce:    uint64(*nonce),
-			CodeHash: crypto.Keccak256Hash(code),
-		}
 		storageChangeMap[addr] = struct{}{}
 	}
 
-	resNewAccount := make([]dtypes.NewAccount, 0, len(newAccountMap))
 	resStorageChange := make([]string, 0, len(storageChangeMap))
-	for _, acc := range newAccountMap {
-		resNewAccount = append(resNewAccount, acc)
-	}
 	for address := range storageChangeMap {
 		resStorageChange = append(resStorageChange, strings.ToLower(address.Hex()))
 	}
-	return resNewAccount, resStorageChange, nil
+	return resStorageChange
 }
 
 // evmDenom returns the EVM denom (native token) at the given height.

@@ -77,7 +77,7 @@ func StartJSONRPC(
 	rpcAPIArr := config.JSONRPC.API
 	var stateSource statediff.StateChangeSource
 	if namespaceEnabled(rpcAPIArr, rpc.TraceNamespace) {
-		resolved, err := resolveStateChangeSource(app)
+		resolved, err := resolveStateChangeSource(app, clientCtx.Codec)
 		if err != nil {
 			return nil, err
 		}

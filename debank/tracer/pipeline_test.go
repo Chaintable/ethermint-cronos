@@ -10,46 +10,28 @@ import (
 
 func hash(b byte) common.Hash { return common.BytesToHash([]byte{b}) }
 
-// TestBuildBlockStateDiff covers the block-level merge rules: canonical storage
-// is used unchanged and a DeletedAccount is cancelled by a later NewAccount.
+// TestBuildBlockStateDiff covers that all four state fields come from the
+// canonical IAVL transition without any tracer-side merge.
 func TestBuildBlockStateDiff(t *testing.T) {
 	accA, accB := hash(0xA), hash(0xB)
-	slot1, slot2 := hash(0x01), hash(0x02)
-
-	diffs := []dtypes.TransactionStateDiff{
-		{
-			NewAccounts: []dtypes.NewAccount{{Address: accA, Nonce: 1, Balance: uint256.NewInt(0)}},
-			StorageDiff: []dtypes.AccountStorageDiff{{Address: accA, Values: []dtypes.IndexValuePair{
-				{Index: slot2, Value: uint256.NewInt(99)},
-				{Index: slot1, Value: uint256.NewInt(10)},
-			}}},
-			NewCodes: []dtypes.NewCode{{CodeHash: hash(0xC1), Code: []byte{0x01}}},
-		},
-		{
-			// last-write-wins on slot1; delete B
-			StorageDiff:     []dtypes.AccountStorageDiff{{Address: accA, Values: []dtypes.IndexValuePair{{Index: slot1, Value: uint256.NewInt(20)}}}},
-			DeletedAccounts: []common.Hash{accB},
-		},
-		{
-			// re-create B -> cancels its deletion
-			NewAccounts: []dtypes.NewAccount{{Address: accB, Nonce: 5, Balance: uint256.NewInt(0)}},
-		},
+	slot := hash(0x01)
+	canonical := dtypes.TransactionStateDiff{
+		NewAccounts:     []dtypes.NewAccount{{Address: accA, Nonce: 1, Balance: uint256.NewInt(2)}},
+		DeletedAccounts: []common.Hash{accB},
+		StorageDiff: []dtypes.AccountStorageDiff{{Address: accA, Values: []dtypes.IndexValuePair{
+			{Index: slot, Value: uint256.NewInt(3)},
+		}}},
+		NewCodes: []dtypes.NewCode{{CodeHash: hash(0xC1), Code: []byte{0x01}}},
 	}
 
-	canonicalStorage := []dtypes.AccountStorageDiff{{Address: accB, Values: []dtypes.IndexValuePair{
-		{Index: slot2, Value: uint256.NewInt(30)},
-	}}}
-	out := BuildBlockStateDiff(hash(0x22), hash(0x33), diffs, canonicalStorage)
-
-	// B was deleted then re-created -> not in DeletedAccounts
-	if len(out.DeletedAccounts) != 0 {
-		t.Errorf("DeletedAccounts should be empty (B re-created), got %v", out.DeletedAccounts)
+	out := BuildBlockStateDiff(hash(0x22), hash(0x33), canonical)
+	if out.Hash != hash(0x33) || out.ParentHash != hash(0x22) {
+		t.Fatalf("unexpected roots: %#v", out)
 	}
-	// A and B both present
-	if len(out.NewAccounts) != 2 {
-		t.Fatalf("want 2 new accounts, got %d", len(out.NewAccounts))
-	}
-	if len(out.StorageDiff) != 1 || out.StorageDiff[0].Address != accB || out.StorageDiff[0].Values[0].Value.Uint64() != 30 {
-		t.Fatalf("canonical storage was not preserved: %#v", out.StorageDiff)
+	if len(out.NewAccounts) != 1 || out.NewAccounts[0].Address != accA ||
+		len(out.DeletedAccounts) != 1 || out.DeletedAccounts[0] != accB ||
+		len(out.StorageDiff) != 1 || out.StorageDiff[0].Values[0].Value.Uint64() != 3 ||
+		len(out.NewCodes) != 1 || out.NewCodes[0].CodeHash != hash(0xC1) {
+		t.Fatalf("canonical state was not preserved: %#v", out)
 	}
 }

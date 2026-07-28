@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	iavlstore "cosmossdk.io/store/iavl"
+	sdkcodec "github.com/cosmos/cosmos-sdk/codec"
 	"github.com/cosmos/iavl"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -21,7 +22,7 @@ const storageKeyLength = 1 + common.AddressLength + common.HashLength
 type StateChangeSource interface {
 	LatestVersion() int64
 	VersionExists(int64) bool
-	ChangeSet(int64) (*iavl.ChangeSet, error)
+	StateDiff(int64, string) (types.TransactionStateDiff, error)
 }
 
 type latestVersionSource interface {
@@ -31,20 +32,48 @@ type latestVersionSource interface {
 type iavlChangeStore interface {
 	VersionExists(int64) bool
 	TraverseStateChanges(int64, int64, func(int64, *iavl.ChangeSet) error) error
+	Snapshot(int64) (stateReader, error)
 }
 
 type iavlStateChangeSource struct {
 	versions latestVersionSource
-	store    iavlChangeStore
+	codec    sdkcodec.Codec
+	accounts iavlChangeStore
+	balances iavlChangeStore
+	evm      iavlChangeStore
 }
 
-// NewIAVLStateChangeSource wraps a commit multi-store and its EVM IAVL store.
-func NewIAVLStateChangeSource(versions latestVersionSource, store *iavlstore.Store) StateChangeSource {
-	return newIAVLStateChangeSource(versions, store)
+type iavlStore struct {
+	*iavlstore.Store
 }
 
-func newIAVLStateChangeSource(versions latestVersionSource, store iavlChangeStore) StateChangeSource {
-	return &iavlStateChangeSource{versions: versions, store: store}
+func (store iavlStore) Snapshot(version int64) (stateReader, error) {
+	return store.GetImmutable(version)
+}
+
+// NewIAVLStateChangeSource wraps the committed account, bank, and EVM stores.
+func NewIAVLStateChangeSource(
+	versions latestVersionSource,
+	codec sdkcodec.Codec,
+	accounts, balances, evm *iavlstore.Store,
+) StateChangeSource {
+	return newIAVLStateChangeSource(
+		versions, codec, iavlStore{accounts}, iavlStore{balances}, iavlStore{evm},
+	)
+}
+
+func newIAVLStateChangeSource(
+	versions latestVersionSource,
+	codec sdkcodec.Codec,
+	accounts, balances, evm iavlChangeStore,
+) StateChangeSource {
+	return &iavlStateChangeSource{
+		versions: versions,
+		codec:    codec,
+		accounts: accounts,
+		balances: balances,
+		evm:      evm,
+	}
 }
 
 func (s *iavlStateChangeSource) LatestVersion() int64 {
@@ -52,13 +81,15 @@ func (s *iavlStateChangeSource) LatestVersion() int64 {
 }
 
 func (s *iavlStateChangeSource) VersionExists(version int64) bool {
-	return s.store.VersionExists(version)
+	return s.accounts.VersionExists(version) &&
+		s.balances.VersionExists(version) &&
+		s.evm.VersionExists(version)
 }
 
-func (s *iavlStateChangeSource) ChangeSet(version int64) (*iavl.ChangeSet, error) {
+func changeSet(store iavlChangeStore, version int64) (*iavl.ChangeSet, error) {
 	var result *iavl.ChangeSet
 	callbacks := 0
-	err := s.store.TraverseStateChanges(version, version, func(callbackVersion int64, changeSet *iavl.ChangeSet) error {
+	err := store.TraverseStateChanges(version, version, func(callbackVersion int64, changeSet *iavl.ChangeSet) error {
 		callbacks++
 		if callbacks != 1 {
 			return fmt.Errorf("changeset version %d produced more than one callback", version)
@@ -78,24 +109,29 @@ func (s *iavlStateChangeSource) ChangeSet(version int64) (*iavl.ChangeSet, error
 	return result, nil
 }
 
-// CanonicalStorageAt validates that version is committed and retained, then
-// converts its EVM IAVL changeset to the canonical wire representation.
-func CanonicalStorageAt(source StateChangeSource, version int64) ([]types.AccountStorageDiff, error) {
+// CanonicalStateAt returns the complete EVM-visible state transition N-1 -> N.
+func CanonicalStateAt(source StateChangeSource, version int64, evmDenom string) (types.TransactionStateDiff, error) {
+	if source == nil {
+		return types.TransactionStateDiff{}, fmt.Errorf("state change source is required")
+	}
 	latest := source.LatestVersion()
 	if latest <= version {
-		return nil, fmt.Errorf("changeset version %d is not behind latest version %d", version, latest)
+		return types.TransactionStateDiff{}, fmt.Errorf("changeset version %d is not behind latest version %d", version, latest)
 	}
 	if !source.VersionExists(version - 1) {
-		return nil, fmt.Errorf("previous changeset version %d is unavailable", version-1)
+		return types.TransactionStateDiff{}, fmt.Errorf("previous changeset version %d is unavailable", version-1)
 	}
 	if !source.VersionExists(version) {
-		return nil, fmt.Errorf("changeset version %d is unavailable", version)
+		return types.TransactionStateDiff{}, fmt.Errorf("changeset version %d is unavailable", version)
 	}
-	changeSet, err := source.ChangeSet(version)
+	diff, err := source.StateDiff(version, evmDenom)
 	if err != nil {
-		return nil, err
+		return types.TransactionStateDiff{}, err
 	}
-	return CanonicalStorageDiff(changeSet)
+	if !source.VersionExists(version-1) || !source.VersionExists(version) {
+		return types.TransactionStateDiff{}, fmt.Errorf("changeset versions %d-%d became unavailable", version-1, version)
+	}
+	return diff, nil
 }
 
 // CanonicalStorageDiff converts EVM storage entries in an IAVL changeset to a
