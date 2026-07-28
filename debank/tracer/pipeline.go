@@ -15,11 +15,11 @@ import (
 func BuildPipelineBlock(rawBlock map[string]interface{}) dtypes.Block {
 	block := dtypes.Block{
 		ID:                    rawBlock["hash"].(hexutil.Bytes).String(),
-		Height:                big.NewInt(int64(rawBlock["number"].(hexutil.Uint64))),
+		Height:                new(big.Int).SetUint64(uint64(rawBlock["number"].(hexutil.Uint64))),
 		ParentID:              rawBlock["parentHash"].(common.Hash).Hex(),
 		BaseFeePerGas:         big.NewInt(0),
 		Miner:                 strings.ToLower(rawBlock["miner"].(common.Address).Hex()),
-		GasLimit:              big.NewInt(int64(rawBlock["gasLimit"].(hexutil.Uint64))),
+		GasLimit:              new(big.Int).SetUint64(uint64(rawBlock["gasLimit"].(hexutil.Uint64))),
 		GasUsed:               (*big.Int)(rawBlock["gasUsed"].(*hexutil.Big)),
 		Timestamp:             uint64(rawBlock["timestamp"].(hexutil.Uint64)),
 		ProcessStartTimestamp: time.Now().UnixMilli(),
@@ -38,7 +38,7 @@ func BuildPipelineTransaction(
 	baseFee *big.Int,
 	success bool,
 ) dtypes.Transaction {
-	var to = common.Address{}
+	to := common.Address{}
 	if tx.To() != nil {
 		to = *tx.To()
 	}
@@ -46,19 +46,18 @@ func BuildPipelineTransaction(
 		ID:               tx.Hash().Hex(),
 		From:             strings.ToLower(from.Hex()),
 		To:               strings.ToLower(to.Hex()),
-		Gas:              big.NewInt(int64(tx.Gas())),
+		Gas:              new(big.Int).SetUint64(tx.Gas()),
 		GasUsed:          gasUsed,
 		GasPrice:         tx.GasPrice(),
 		Status:           success,
 		GasFeeCap:        common.Big0,
 		GasTipCap:        common.Big0,
 		Input:            tx.Data(),
-		Nonce:            big.NewInt(int64(tx.Nonce())),
+		Nonce:            new(big.Int).SetUint64(tx.Nonce()),
 		TransactionIndex: index,
 		Value:            (*hexutil.Big)(tx.Value()),
 	}
-	switch tx.Type() {
-	case ethtypes.DynamicFeeTxType:
+	if tx.Type() == ethtypes.DynamicFeeTxType {
 		transaction.GasFeeCap = tx.GasFeeCap()
 		transaction.GasTipCap = tx.GasTipCap()
 		// if the transaction has been mined, compute the effective gas price
@@ -72,7 +71,7 @@ func BuildPipelineTransaction(
 
 func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
 	blockHeader := dtypes.Header{
-		Number:           (*hexutil.Big)(big.NewInt(int64(header["number"].(hexutil.Uint64)))),
+		Number:           (*hexutil.Big)(new(big.Int).SetUint64(uint64(header["number"].(hexutil.Uint64)))),
 		Hash:             common.BytesToHash(header["hash"].(hexutil.Bytes)),
 		ParentHash:       header["parentHash"].(common.Hash),
 		Nonce:            header["nonce"].(ethtypes.BlockNonce),

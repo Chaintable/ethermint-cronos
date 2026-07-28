@@ -142,7 +142,7 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 		return nil, err
 	}
 
-	blockFile, _, fromToAddress, diverged, err := api.assembleBlockFile(
+	blockFile, fromToAddress, diverged, err := api.assembleBlockFile(
 		blockHeight, block, transactions, ethMsgs, baseFee, traceResults, consensus)
 	if err != nil {
 		return nil, err
@@ -167,7 +167,7 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 		if err != nil {
 			return nil, err
 		}
-		blockFile, _, fromToAddress, _, err = api.assembleBlockFile(
+		blockFile, fromToAddress, _, err = api.assembleBlockFile(
 			blockHeight, block, transactions, ethMsgs, baseFee, traceResults, consensus)
 		if err != nil {
 			return nil, err
@@ -221,7 +221,7 @@ func (api *API) assembleBlockFile(
 	baseFee *big.Int,
 	traceResults []*evmtypes.TxTraceResult,
 	consensus map[string]*consensusReceipt,
-) (*dtypes.BlockFile, []dtypes.TransactionStateDiff, map[common.Address]struct{}, bool, error) {
+) (*dtypes.BlockFile, map[common.Address]struct{}, bool, error) {
 	blockFile := &dtypes.BlockFile{
 		Block:            dtracer.BuildPipelineBlock(block),
 		Events:           make([]dtypes.Event, 0),
@@ -231,7 +231,6 @@ func (api *API) assembleBlockFile(
 		ErrorTraces:      make([]dtypes.Trace, 0),
 		StorageContracts: make([]string, 0),
 	}
-	transactionStates := make([]dtypes.TransactionStateDiff, 0)
 	fromToAddress := make(map[common.Address]struct{})
 	diverged := false
 
@@ -242,11 +241,11 @@ func (api *API) assembleBlockFile(
 		}
 		decoded, err := json.Marshal(result.Result)
 		if err != nil {
-			return nil, nil, nil, false, status.Error(codes.Internal, err.Error())
+			return nil, nil, false, status.Error(codes.Internal, err.Error())
 		}
 		var traceResult dtypes.TraceResult
 		if err = json.Unmarshal(decoded, &traceResult); err != nil {
-			return nil, nil, nil, false, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
+			return nil, nil, false, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
 		}
 
 		// Build the per-tx Transaction here (not in the tracer): Cronos's standard
@@ -278,7 +277,6 @@ func (api *API) assembleBlockFile(
 		blockFile.ErrorEvents = append(blockFile.ErrorEvents, traceResult.ErrorEvents...)
 		blockFile.ErrorTraces = append(blockFile.ErrorTraces, traceResult.ErrorTraces...)
 		blockFile.StorageContracts = append(blockFile.StorageContracts, traceResult.StorageContracts...)
-		transactionStates = append(transactionStates, traceResult.StateDiff)
 	}
 
 	// Align event.LogIndex to the chain's native logIndex (what
@@ -306,7 +304,7 @@ func (api *API) assembleBlockFile(
 			blockFile.Events[i].LogIndex = int64(i)
 		}
 	}
-	return blockFile, transactionStates, fromToAddress, diverged, nil
+	return blockFile, fromToAddress, diverged, nil
 }
 
 // buildGuidanceJSON encodes per-tx consensus truth (in block tx order) for the
