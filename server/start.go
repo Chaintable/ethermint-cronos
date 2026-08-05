@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 	"runtime/pprof"
 
+	iavlstore "cosmossdk.io/store/iavl"
+	storetypes "cosmossdk.io/store/types"
 	"github.com/cosmos/cosmos-sdk/codec"
 	"github.com/cosmos/cosmos-sdk/crypto/keyring"
 	"github.com/cosmos/cosmos-sdk/telemetry"
@@ -63,6 +65,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
 
+	"github.com/evmos/ethermint/debank/statediff"
 	"github.com/evmos/ethermint/indexer"
 	ethdebug "github.com/evmos/ethermint/rpc/namespaces/ethereum/debug"
 	"github.com/evmos/ethermint/server/config"
@@ -659,8 +662,7 @@ func startJSONRPCServer(
 	if !config.JSONRPC.Enable {
 		return
 	}
-
-	txApp, ok := app.(PendingTxListener)
+	txApp, ok := app.(AppWithPendingTxListener)
 	if !ok {
 		return ctx, fmt.Errorf("json-rpc server requires AppWithPendingTxStream")
 	}
@@ -673,6 +675,44 @@ func startJSONRPCServer(
 	ctx = clientCtx.WithChainID(genDoc.ChainID)
 	_, err = StartJSONRPC(stdCtx, svrCtx, clientCtx, g, &config, idxer, txApp)
 	return
+}
+
+type namedCommitMultiStore interface {
+	LatestVersion() int64
+	StoreKeysByName() map[string]storetypes.StoreKey
+}
+
+func resolveStateChangeSource(app types.Application, codec codec.Codec) (statediff.StateChangeSource, error) {
+	cms := app.CommitMultiStore()
+	named, ok := cms.(namedCommitMultiStore)
+	if !ok {
+		return nil, fmt.Errorf("trace namespace requires a named commit multi-store, got %T", cms)
+	}
+	stores := make(map[string]*iavlstore.Store, 3)
+	for _, name := range []string{"acc", "bank", "evm"} {
+		key, found := named.StoreKeysByName()[name]
+		if !found {
+			return nil, fmt.Errorf("trace namespace requires the %s store", name)
+		}
+		commitStore := cms.GetCommitKVStore(key)
+		store, found := commitStore.(*iavlstore.Store)
+		if !found {
+			return nil, fmt.Errorf("trace namespace requires a standard IAVL %s store, got %T", name, commitStore)
+		}
+		stores[name] = store
+	}
+	return statediff.NewIAVLStateChangeSource(
+		named, codec, stores["acc"], stores["bank"], stores["evm"],
+	), nil
+}
+
+func namespaceEnabled(namespaces []string, target string) bool {
+	for _, namespace := range namespaces {
+		if namespace == target {
+			return true
+		}
+	}
+	return false
 }
 
 func startRosettaServer(

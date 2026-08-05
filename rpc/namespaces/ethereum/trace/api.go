@@ -17,11 +17,10 @@ import (
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/rlp"
-	"github.com/holiman/uint256"
 
 	"github.com/evmos/ethermint/debank/bankdiff"
+	"github.com/evmos/ethermint/debank/statediff"
 	dtracer "github.com/evmos/ethermint/debank/tracer"
 	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/evmos/ethermint/rpc/backend"
@@ -36,6 +35,7 @@ type API struct {
 	backend     backend.EVMBackend
 	clientCtx   client.Context
 	queryClient *rpctypes.QueryClient
+	stateSource statediff.StateChangeSource
 }
 
 // NewAPI creates the trace namespace API.
@@ -44,6 +44,7 @@ func NewAPI(
 	logger log.Logger,
 	backend backend.EVMBackend,
 	clientCtx client.Context,
+	stateSource statediff.StateChangeSource,
 ) *API {
 	return &API{
 		ctx:         ctx,
@@ -51,6 +52,7 @@ func NewAPI(
 		backend:     backend,
 		clientCtx:   clientCtx,
 		queryClient: rpctypes.NewQueryClient(clientCtx),
+		stateSource: stateSource,
 	}
 }
 
@@ -140,7 +142,7 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 		return nil, err
 	}
 
-	blockFile, transactionStates, fromToAddress, diverged, err := api.assembleBlockFile(
+	blockFile, fromToAddress, diverged, err := api.assembleBlockFile(
 		blockHeight, block, transactions, ethMsgs, baseFee, traceResults, consensus)
 	if err != nil {
 		return nil, err
@@ -165,31 +167,39 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 		if err != nil {
 			return nil, err
 		}
-		blockFile, transactionStates, fromToAddress, _, err = api.assembleBlockFile(
+		blockFile, fromToAddress, _, err = api.assembleBlockFile(
 			blockHeight, block, transactions, ethMsgs, baseFee, traceResults, consensus)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	stateDiff := dtracer.BuildBlockStateDiff(parentHeader.Root, stateHeader.StateRoot, transactionStates)
-
-	// Native CRO balance channel: bank events surface addresses the EVM tracer
-	// never sees (gas/fee, plain transfers, CRC20 convert, IBC, module accounts).
 	evmDenom, err := api.evmDenom(blockHeight)
 	if err != nil {
 		return nil, err
 	}
+	previousDenom, err := api.evmDenom(blockHeight - 1)
+	if err != nil {
+		return nil, err
+	}
+	if previousDenom != evmDenom {
+		return nil, fmt.Errorf(
+			"evm denom changed at block %d from %s to %s", blockHeight, previousDenom, evmDenom,
+		)
+	}
+	canonical, err := statediff.CanonicalStateAt(api.stateSource, int64(blockHeight), evmDenom)
+	if err != nil {
+		return nil, fmt.Errorf("load canonical state diff for block %d: %w", blockHeight, err)
+	}
+	stateDiff := dtracer.BuildBlockStateDiff(parentHeader.Root, stateHeader.StateRoot, canonical)
+
+	// Preserve the existing BlockFile.StorageContracts discovery from tx and
+	// native-CRO bank-event addresses; it no longer supplies stateDiff accounts.
 	for addr := range bankdiff.CoinTouchedAddresses(blockRes, evmDenom) {
 		fromToAddress[addr] = struct{}{}
 	}
 
-	newAccounts, storageContracts, err := api.fillAbsoluteState(fromToAddress, stateDiff.NewAccounts, blockFile.StorageContracts, blockHeight)
-	if err != nil {
-		return nil, err
-	}
-	stateDiff.NewAccounts = newAccounts
-	blockFile.StorageContracts = storageContracts
+	blockFile.StorageContracts = mergeStorageContracts(fromToAddress, blockFile.StorageContracts)
 
 	return &dtypes.DebankOutPut{
 		BlockFile:      blockFile,
@@ -211,7 +221,7 @@ func (api *API) assembleBlockFile(
 	baseFee *big.Int,
 	traceResults []*evmtypes.TxTraceResult,
 	consensus map[string]*consensusReceipt,
-) (*dtypes.BlockFile, []dtypes.TransactionStateDiff, map[common.Address]struct{}, bool, error) {
+) (*dtypes.BlockFile, map[common.Address]struct{}, bool, error) {
 	blockFile := &dtypes.BlockFile{
 		Block:            dtracer.BuildPipelineBlock(block),
 		Events:           make([]dtypes.Event, 0),
@@ -221,7 +231,6 @@ func (api *API) assembleBlockFile(
 		ErrorTraces:      make([]dtypes.Trace, 0),
 		StorageContracts: make([]string, 0),
 	}
-	transactionStates := make([]dtypes.TransactionStateDiff, 0)
 	fromToAddress := make(map[common.Address]struct{})
 	diverged := false
 
@@ -232,11 +241,11 @@ func (api *API) assembleBlockFile(
 		}
 		decoded, err := json.Marshal(result.Result)
 		if err != nil {
-			return nil, nil, nil, false, status.Error(codes.Internal, err.Error())
+			return nil, nil, false, status.Error(codes.Internal, err.Error())
 		}
 		var traceResult dtypes.TraceResult
 		if err = json.Unmarshal(decoded, &traceResult); err != nil {
-			return nil, nil, nil, false, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
+			return nil, nil, false, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
 		}
 
 		// Build the per-tx Transaction here (not in the tracer): Cronos's standard
@@ -268,7 +277,6 @@ func (api *API) assembleBlockFile(
 		blockFile.ErrorEvents = append(blockFile.ErrorEvents, traceResult.ErrorEvents...)
 		blockFile.ErrorTraces = append(blockFile.ErrorTraces, traceResult.ErrorTraces...)
 		blockFile.StorageContracts = append(blockFile.StorageContracts, traceResult.StorageContracts...)
-		transactionStates = append(transactionStates, traceResult.StateDiff)
 	}
 
 	// Align event.LogIndex to the chain's native logIndex (what
@@ -296,7 +304,7 @@ func (api *API) assembleBlockFile(
 			blockFile.Events[i].LogIndex = int64(i)
 		}
 	}
-	return blockFile, transactionStates, fromToAddress, diverged, nil
+	return blockFile, fromToAddress, diverged, nil
 }
 
 // buildGuidanceJSON encodes per-tx consensus truth (in block tx order) for the
@@ -331,51 +339,20 @@ func buildGuidanceJSON(ethMsgs []*evmtypes.MsgEthereumTx, consensus map[string]*
 	return json.Marshal(map[string]interface{}{"debankConsensusGuidance": guidance})
 }
 
-// fillAbsoluteState overwrites/adds NewAccount entries with the authoritative
-// post-N balance/nonce/code (via GetBalance/GetTransactionCount/GetCode at N)
-// for every discovered address: tx from/to plus bank-event touched addresses.
-// This is cosmos-evm's addGasUsedStateDiff generalized to the bank channel.
-func (api *API) fillAbsoluteState(addresses map[common.Address]struct{}, newAccount []dtypes.NewAccount, storageChange []string, number rpctypes.BlockNumber) ([]dtypes.NewAccount, []string, error) {
-	newAccountMap := make(map[common.Hash]dtypes.NewAccount)
+func mergeStorageContracts(addresses map[common.Address]struct{}, storageChange []string) []string {
 	storageChangeMap := make(map[common.Address]struct{})
-	for _, account := range newAccount {
-		newAccountMap[account.Address] = account
-	}
 	for _, address := range storageChange {
 		storageChangeMap[common.HexToAddress(address)] = struct{}{}
 	}
 	for addr := range addresses {
-		addrHash := crypto.Keccak256Hash(addr.Bytes())
-		balance, err := api.backend.GetBalance(addr, rpctypes.BlockNumberOrHash{BlockNumber: &number})
-		if err != nil {
-			return nil, nil, err
-		}
-		nonce, err := api.backend.GetTransactionCount(addr, number)
-		if err != nil {
-			return nil, nil, err
-		}
-		code, err := api.backend.GetCode(addr, rpctypes.BlockNumberOrHash{BlockNumber: &number})
-		if err != nil {
-			return nil, nil, err
-		}
-		newAccountMap[addrHash] = dtypes.NewAccount{
-			Address:  addrHash,
-			Balance:  uint256.MustFromBig((*big.Int)(balance)),
-			Nonce:    uint64(*nonce),
-			CodeHash: crypto.Keccak256Hash(code),
-		}
 		storageChangeMap[addr] = struct{}{}
 	}
 
-	resNewAccount := make([]dtypes.NewAccount, 0, len(newAccountMap))
 	resStorageChange := make([]string, 0, len(storageChangeMap))
-	for _, acc := range newAccountMap {
-		resNewAccount = append(resNewAccount, acc)
-	}
 	for address := range storageChangeMap {
 		resStorageChange = append(resStorageChange, strings.ToLower(address.Hex()))
 	}
-	return resNewAccount, resStorageChange, nil
+	return resStorageChange
 }
 
 // evmDenom returns the EVM denom (native token) at the given height.

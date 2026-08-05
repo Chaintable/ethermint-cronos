@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/rpc"
 
+	"github.com/evmos/ethermint/debank/statediff"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/debug"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/eth"
@@ -153,22 +154,6 @@ func init() {
 				},
 			}
 		},
-		TraceNamespace: func(ctx *server.Context,
-			clientCtx client.Context,
-			_ *stream.RPCStream,
-			allowUnprotectedTxs bool,
-			indexer ethermint.EVMTxIndexer,
-		) []rpc.API {
-			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer)
-			return []rpc.API{
-				{
-					Namespace: TraceNamespace,
-					Version:   apiVersion,
-					Service:   trace.NewAPI(ctx, ctx.Logger, evmBackend, clientCtx),
-					Public:    true,
-				},
-			}
-		},
 	}
 }
 
@@ -179,10 +164,21 @@ func GetRPCAPIs(ctx *server.Context,
 	allowUnprotectedTxs bool,
 	indexer ethermint.EVMTxIndexer,
 	selectedAPIs []string,
+	stateSource statediff.StateChangeSource,
 ) []rpc.API {
 	var apis []rpc.API
 
 	for _, ns := range selectedAPIs {
+		if ns == TraceNamespace {
+			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer)
+			apis = append(apis, rpc.API{
+				Namespace: TraceNamespace,
+				Version:   apiVersion,
+				Service:   trace.NewAPI(ctx, ctx.Logger, evmBackend, clientCtx, stateSource),
+				Public:    true,
+			})
+			continue
+		}
 		if creator, ok := apiCreators[ns]; ok {
 			apis = append(apis, creator(ctx, clientCtx, stream, allowUnprotectedTxs, indexer)...)
 		} else {
@@ -196,6 +192,9 @@ func GetRPCAPIs(ctx *server.Context,
 // RegisterAPINamespace registers a new API namespace with the API creator.
 // This function fails if the namespace is already registered.
 func RegisterAPINamespace(ns string, creator APICreator) error {
+	if ns == TraceNamespace {
+		return fmt.Errorf("duplicated api namespace %s", ns)
+	}
 	if _, ok := apiCreators[ns]; ok {
 		return fmt.Errorf("duplicated api namespace %s", ns)
 	}

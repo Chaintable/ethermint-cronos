@@ -2,26 +2,24 @@ package tracer
 
 import (
 	"math/big"
-	"sort"
 	"strings"
 	"time"
 
-	dtypes "github.com/evmos/ethermint/debank/types"
-	evmtypes "github.com/evmos/ethermint/x/evm/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/holiman/uint256"
+	dtypes "github.com/evmos/ethermint/debank/types"
+	evmtypes "github.com/evmos/ethermint/x/evm/types"
 )
 
 func BuildPipelineBlock(rawBlock map[string]interface{}) dtypes.Block {
 	block := dtypes.Block{
 		ID:                    rawBlock["hash"].(hexutil.Bytes).String(),
-		Height:                big.NewInt(int64(rawBlock["number"].(hexutil.Uint64))),
+		Height:                new(big.Int).SetUint64(uint64(rawBlock["number"].(hexutil.Uint64))),
 		ParentID:              rawBlock["parentHash"].(common.Hash).Hex(),
 		BaseFeePerGas:         big.NewInt(0),
 		Miner:                 strings.ToLower(rawBlock["miner"].(common.Address).Hex()),
-		GasLimit:              big.NewInt(int64(rawBlock["gasLimit"].(hexutil.Uint64))),
+		GasLimit:              new(big.Int).SetUint64(uint64(rawBlock["gasLimit"].(hexutil.Uint64))),
 		GasUsed:               (*big.Int)(rawBlock["gasUsed"].(*hexutil.Big)),
 		Timestamp:             uint64(rawBlock["timestamp"].(hexutil.Uint64)),
 		ProcessStartTimestamp: time.Now().UnixMilli(),
@@ -40,7 +38,7 @@ func BuildPipelineTransaction(
 	baseFee *big.Int,
 	success bool,
 ) dtypes.Transaction {
-	var to = common.Address{}
+	to := common.Address{}
 	if tx.To() != nil {
 		to = *tx.To()
 	}
@@ -48,19 +46,18 @@ func BuildPipelineTransaction(
 		ID:               tx.Hash().Hex(),
 		From:             strings.ToLower(from.Hex()),
 		To:               strings.ToLower(to.Hex()),
-		Gas:              big.NewInt(int64(tx.Gas())),
+		Gas:              new(big.Int).SetUint64(tx.Gas()),
 		GasUsed:          gasUsed,
 		GasPrice:         tx.GasPrice(),
 		Status:           success,
 		GasFeeCap:        common.Big0,
 		GasTipCap:        common.Big0,
 		Input:            tx.Data(),
-		Nonce:            big.NewInt(int64(tx.Nonce())),
+		Nonce:            new(big.Int).SetUint64(tx.Nonce()),
 		TransactionIndex: index,
 		Value:            (*hexutil.Big)(tx.Value()),
 	}
-	switch tx.Type() {
-	case ethtypes.DynamicFeeTxType:
+	if tx.Type() == ethtypes.DynamicFeeTxType {
 		transaction.GasFeeCap = tx.GasFeeCap()
 		transaction.GasTipCap = tx.GasTipCap()
 		// if the transaction has been mined, compute the effective gas price
@@ -74,7 +71,7 @@ func BuildPipelineTransaction(
 
 func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
 	blockHeader := dtypes.Header{
-		Number:           (*hexutil.Big)(big.NewInt(int64(header["number"].(hexutil.Uint64)))),
+		Number:           (*hexutil.Big)(new(big.Int).SetUint64(uint64(header["number"].(hexutil.Uint64)))),
 		Hash:             common.BytesToHash(header["hash"].(hexutil.Bytes)),
 		ParentHash:       header["parentHash"].(common.Hash),
 		Nonce:            header["nonce"].(ethtypes.BlockNonce),
@@ -97,74 +94,17 @@ func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
 	return &blockHeader
 }
 
-func BuildBlockStateDiff(parentRoot common.Hash, root common.Hash, diffs []dtypes.TransactionStateDiff) dtypes.BlockStorageDiff {
-	storageDiff := dtypes.BlockStorageDiff{
+func BuildBlockStateDiff(
+	parentRoot common.Hash,
+	root common.Hash,
+	canonical dtypes.TransactionStateDiff,
+) dtypes.BlockStorageDiff {
+	return dtypes.BlockStorageDiff{
 		Hash:            root,
 		ParentHash:      parentRoot,
-		NewAccounts:     make([]dtypes.NewAccount, 0),
-		NewCodes:        make([]dtypes.NewCode, 0),
-		DeletedAccounts: make([]common.Hash, 0),
-		StorageDiff:     make([]dtypes.AccountStorageDiff, 0),
+		NewAccounts:     canonical.NewAccounts,
+		DeletedAccounts: canonical.DeletedAccounts,
+		StorageDiff:     canonical.StorageDiff,
+		NewCodes:        canonical.NewCodes,
 	}
-	newAccountMap := make(map[common.Hash]dtypes.NewAccount)
-	deleteAccountMap := make(map[common.Hash]struct{})
-	codeMap := make(map[common.Hash]dtypes.NewCode)
-
-	mergedStorage := make(map[common.Hash]map[common.Hash]*uint256.Int)
-
-	for _, diff := range diffs {
-		for _, deletedAccount := range diff.DeletedAccounts {
-			delete(newAccountMap, deletedAccount)
-			delete(mergedStorage, deletedAccount)
-			deleteAccountMap[deletedAccount] = struct{}{}
-		}
-
-		for _, newCode := range diff.NewCodes {
-			codeMap[newCode.CodeHash] = newCode
-		}
-		for _, newAccount := range diff.NewAccounts {
-			newAccountMap[newAccount.Address] = newAccount
-			delete(deleteAccountMap, newAccount.Address)
-		}
-		for _, accountStorageDiff := range diff.StorageDiff {
-			addr := accountStorageDiff.Address
-			if mergedStorage[addr] == nil {
-				mergedStorage[addr] = make(map[common.Hash]*uint256.Int)
-			}
-			for _, kv := range accountStorageDiff.Values {
-				mergedStorage[addr][kv.Index] = kv.Value
-			}
-		}
-	}
-
-	for deleteAccount := range deleteAccountMap {
-		storageDiff.DeletedAccounts = append(storageDiff.DeletedAccounts, deleteAccount)
-	}
-	for _, account := range newAccountMap {
-		storageDiff.NewAccounts = append(storageDiff.NewAccounts, account)
-	}
-	for _, code := range codeMap {
-		storageDiff.NewCodes = append(storageDiff.NewCodes, code)
-	}
-
-	for addr, slots := range mergedStorage {
-		accountDiff := dtypes.AccountStorageDiff{
-			Address: addr,
-			Values:  make([]dtypes.IndexValuePair, 0, len(slots)),
-		}
-		for index, value := range slots {
-			accountDiff.Values = append(accountDiff.Values, dtypes.IndexValuePair{
-				Index: index,
-				Value: value,
-			})
-		}
-
-		sort.Slice(accountDiff.Values, func(i, j int) bool {
-			return accountDiff.Values[i].Index.Hex() < accountDiff.Values[j].Index.Hex()
-		})
-
-		storageDiff.StorageDiff = append(storageDiff.StorageDiff, accountDiff)
-	}
-
-	return storageDiff
 }
