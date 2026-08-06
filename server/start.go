@@ -703,6 +703,16 @@ type consensusMutexClientCreator struct {
 
 var _ proxy.ClientCreator = (*consensusMutexClientCreator)(nil)
 
+// NewConsensusMutexClientCreator builds the node's ABCI client creator around a
+// caller-owned mutex. Callers that stand up a node outside startInProcess (the
+// test network) pass the same mutex to StartJSONRPC, so the state-diff emitter
+// is serialized against block execution there too.
+func NewConsensusMutexClientCreator(
+	mtx *cmtsync.Mutex, app abcitypes.Application, syncAllConnections bool,
+) proxy.ClientCreator {
+	return &consensusMutexClientCreator{mtx: mtx, app: app, syncAllConnections: syncAllConnections}
+}
+
 func (c *consensusMutexClientCreator) NewABCIConsensusClient() (abcicli.Client, error) {
 	return abcicli.NewLocalClient(c.mtx, c.app), nil
 }
