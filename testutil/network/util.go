@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"cosmossdk.io/log"
 	cmtcfg "github.com/cometbft/cometbft/config"
@@ -143,9 +144,11 @@ func startInProcess(cfg Config, val *Validator) error {
 			return fmt.Errorf("validator %s context is nil", val.Moniker)
 		}
 
+		// The test network builds its node outside startInProcess, so there is
+		// no consensus mutex to share here.
 		val.jsonrpc, err = server.StartJSONRPC(
 			ctx, val.Ctx, val.ClientCtx, val.errGroup, val.AppConfig,
-			nil, app.(server.AppWithPendingTxListener),
+			nil, app.(server.AppWithPendingTxListener), new(sync.Mutex),
 		)
 		if err != nil {
 			return err

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"sort"
+	"sync"
 
 	iavlstore "cosmossdk.io/store/iavl"
 	sdkcodec "github.com/cosmos/cosmos-sdk/codec"
@@ -43,22 +44,78 @@ type iavlStateChangeSource struct {
 	evm      iavlChangeStore
 }
 
+// iavlStore reads a writer's live IAVL store. The tree is the same object
+// block execution mutates, and iavl.MutableTree is not safe for concurrent
+// use, so every call that reaches it holds the mutex that serializes consensus
+// ABCI calls. The critical sections stay minimal: only the tree access is
+// locked, decoding and world-state assembly run outside.
 type iavlStore struct {
-	*iavlstore.Store
+	store *iavlstore.Store
+	mtx   sync.Locker
 }
 
-func (store iavlStore) Snapshot(version int64) (stateReader, error) {
-	return store.GetImmutable(version)
+func (s iavlStore) VersionExists(version int64) bool {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	return s.store.VersionExists(version)
+}
+
+func (s iavlStore) TraverseStateChanges(
+	startVersion, endVersion int64, fn func(int64, *iavl.ChangeSet) error,
+) error {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	return s.store.TraverseStateChanges(startVersion, endVersion, fn)
+}
+
+func (s iavlStore) Snapshot(version int64) (stateReader, error) {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	snapshot, err := s.store.GetImmutable(version)
+	if err != nil {
+		return nil, err
+	}
+	// The snapshot shares the live nodeDB, so its reads are locked too.
+	return lockedStateReader{store: snapshot, mtx: s.mtx}, nil
+}
+
+type lockedStateReader struct {
+	store *iavlstore.Store
+	mtx   sync.Locker
+}
+
+func (r lockedStateReader) Get(key []byte) []byte {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+	return r.store.Get(key)
+}
+
+type lockedVersionSource struct {
+	versions latestVersionSource
+	mtx      sync.Locker
+}
+
+func (s lockedVersionSource) LatestVersion() int64 {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	return s.versions.LatestVersion()
 }
 
 // NewIAVLStateChangeSource wraps the committed account, bank, and EVM stores.
+// abciMtx must be the mutex cometbft's local client holds across consensus
+// ABCI calls, so state-diff reads never overlap block execution.
 func NewIAVLStateChangeSource(
+	abciMtx sync.Locker,
 	versions latestVersionSource,
 	codec sdkcodec.Codec,
 	accounts, balances, evm *iavlstore.Store,
 ) StateChangeSource {
 	return newIAVLStateChangeSource(
-		versions, codec, iavlStore{accounts}, iavlStore{balances}, iavlStore{evm},
+		lockedVersionSource{versions: versions, mtx: abciMtx},
+		codec,
+		iavlStore{store: accounts, mtx: abciMtx},
+		iavlStore{store: balances, mtx: abciMtx},
+		iavlStore{store: evm, mtx: abciMtx},
 	)
 }
 
