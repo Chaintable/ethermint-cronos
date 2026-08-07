@@ -24,10 +24,10 @@ import (
 	"cosmossdk.io/log"
 	cmtcfg "github.com/cometbft/cometbft/config"
 	tmos "github.com/cometbft/cometbft/libs/os"
+	cmtsync "github.com/cometbft/cometbft/libs/sync"
 	"github.com/cometbft/cometbft/node"
 	"github.com/cometbft/cometbft/p2p"
 	pvm "github.com/cometbft/cometbft/privval"
-	"github.com/cometbft/cometbft/proxy"
 	"github.com/cometbft/cometbft/rpc/client/local"
 	"github.com/cometbft/cometbft/types"
 	cmttime "github.com/cometbft/cometbft/types/time"
@@ -71,11 +71,14 @@ func startInProcess(cfg Config, val *Validator) error {
 
 	genDocProvider := server.GenDocProvider(cmtCfg)
 	cmtApp := sdkserver.NewCometABCIWrapper(app)
+	// Shared with StartJSONRPC below so the state-diff emitter is serialized
+	// against block execution here exactly as it is in production.
+	abciMtx := new(cmtsync.Mutex)
 	tmNode, err := node.NewNode(
 		cmtCfg,
 		pvm.LoadOrGenFilePV(cmtCfg.PrivValidatorKeyFile(), cmtCfg.PrivValidatorStateFile()),
 		nodeKey,
-		proxy.NewLocalClientCreator(cmtApp),
+		server.NewConsensusMutexClientCreator(abciMtx, cmtApp, true),
 		genDocProvider,
 		cmtcfg.DefaultDBProvider,
 		node.DefaultMetricsProvider(cmtCfg.Instrumentation),
@@ -145,7 +148,7 @@ func startInProcess(cfg Config, val *Validator) error {
 
 		val.jsonrpc, err = server.StartJSONRPC(
 			ctx, val.Ctx, val.ClientCtx, val.errGroup, val.AppConfig,
-			nil, app.(server.AppWithPendingTxListener),
+			nil, app.(server.AppWithPendingTxListener), abciMtx,
 		)
 		if err != nil {
 			return err

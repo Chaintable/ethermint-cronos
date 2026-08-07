@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -54,6 +55,7 @@ func StartJSONRPC(
 	config *config.Config,
 	indexer ethermint.EVMTxIndexer,
 	app AppWithPendingTxListener,
+	abciMtx sync.Locker,
 ) (*http.Server, error) {
 	logger := srvCtx.Logger.With("module", "geth")
 	// Set Geth's global logger to use this handler
@@ -77,7 +79,7 @@ func StartJSONRPC(
 	rpcAPIArr := config.JSONRPC.API
 	var stateSource statediff.StateChangeSource
 	if namespaceEnabled(rpcAPIArr, rpc.TraceNamespace) {
-		resolved, err := resolveStateChangeSource(app, clientCtx.Codec)
+		resolved, err := resolveStateChangeSource(app, clientCtx.Codec, abciMtx)
 		if err != nil {
 			return nil, err
 		}

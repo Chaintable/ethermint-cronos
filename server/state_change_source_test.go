@@ -1,6 +1,7 @@
 package server
 
 import (
+	"sync"
 	"testing"
 
 	"cosmossdk.io/log"
@@ -44,7 +45,7 @@ func sourceTestIAVLStore() *iavlstore.Store {
 }
 
 func TestResolveStateChangeSourceRejectsUnsupportedStores(t *testing.T) {
-	_, err := resolveStateChangeSource(sourceTestApp{cms: unnamedTestCMS{}}, nil)
+	_, err := resolveStateChangeSource(sourceTestApp{cms: unnamedTestCMS{}}, nil, new(sync.Mutex))
 	require.ErrorContains(t, err, "named commit multi-store")
 
 	keys := map[string]storetypes.StoreKey{
@@ -63,7 +64,7 @@ func TestResolveStateChangeSourceRejectsUnsupportedStores(t *testing.T) {
 			stores: map[string]storetypes.CommitKVStore{
 				"acc": iavlStore, "bank": iavlStore, "evm": iavlStore,
 			},
-		}}, nil)
+		}}, nil, new(sync.Mutex))
 		require.ErrorContains(t, err, "requires the "+missing+" store")
 	}
 
@@ -72,7 +73,7 @@ func TestResolveStateChangeSourceRejectsUnsupportedStores(t *testing.T) {
 	}
 	evmKey := storetypes.NewKVStoreKey("evm")
 	keys["evm"] = evmKey
-	_, err = resolveStateChangeSource(sourceTestApp{cms: namedTestCMS{keys: keys, stores: stores}}, nil)
+	_, err = resolveStateChangeSource(sourceTestApp{cms: namedTestCMS{keys: keys, stores: stores}}, nil, new(sync.Mutex))
 	require.ErrorContains(t, err, "standard IAVL evm store")
 }
 
