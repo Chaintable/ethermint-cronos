@@ -21,12 +21,12 @@ jobs:
         with:
           app-id: "${{ secrets.APP_ID }}"
           private-key: "${{ secrets.APP_PRIVATE_KEY }}"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
           token: "${{ steps.app-token.outputs.token }}"
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25.10"
           check-latest: true
@@ -55,7 +55,7 @@ jobs:
       - name: Tidy all Go modules
         run: ./scripts/go-mod-tidy-all.sh
       - name: Commit changes
-        uses: EndBug/add-and-commit@v10
+        uses: EndBug/add-and-commit@v11
         with:
           default_author: user_info
           message: "${{ github.event.pull_request.title }} for all modules"
