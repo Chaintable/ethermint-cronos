@@ -6,13 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers"
-	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/holiman/uint256"
 )
 
@@ -34,12 +34,10 @@ func (m *mockStateDB) GetCodeHash(a common.Address) common.Hash {
 	}
 	return ethtypes.EmptyCodeHash
 }
-func (m *mockStateDB) Exist(a common.Address) bool            { return m.exist[a] }
-func (m *mockStateDB) GetBalance(common.Address) *uint256.Int { return uint256.NewInt(0) }
-func (m *mockStateDB) GetTransientState(common.Address, common.Hash) common.Hash {
-	return common.Hash{}
-}
-func (m *mockStateDB) GetRefund() uint64 { return 0 }
+func (m *mockStateDB) Exist(a common.Address) bool                               { return m.exist[a] }
+func (m *mockStateDB) GetBalance(common.Address) *uint256.Int                    { return uint256.NewInt(0) }
+func (m *mockStateDB) GetTransientState(common.Address, common.Hash) common.Hash { return common.Hash{} }
+func (m *mockStateDB) GetRefund() uint64                                         { return 0 }
 
 func newTestTracer(t *testing.T, txHash common.Hash) *tracers.Tracer {
 	t.Helper()
@@ -70,11 +68,11 @@ func TestEventEmissionOrder(t *testing.T) {
 	h := tr.Hooks
 	h.OnTxStart(nil, ethtypes.NewTx(&ethtypes.LegacyTx{Gas: 100000}), from)
 	h.OnEnter(0, byte(vm.CALL), from, root, nil, 100000, big.NewInt(0))
-	h.OnLog(mkLog(addrA, 0)) // root log, before subcall
+	h.OnLog(mkLog(addrA, 0))                                       // root log, before subcall
 	h.OnEnter(1, byte(vm.CALL), root, child, nil, 50000, big.NewInt(0))
-	h.OnLog(mkLog(addrB, 1)) // child log
+	h.OnLog(mkLog(addrB, 1))                                       // child log
 	h.OnExit(1, nil, 21000, nil, false)
-	h.OnLog(mkLog(addrC, 2)) // root log, after subcall
+	h.OnLog(mkLog(addrC, 2))                                       // root log, after subcall
 	h.OnExit(0, nil, 50000, nil, false)
 	h.OnTxEnd(&ethtypes.Receipt{GasUsed: 60000}, nil)
 
@@ -283,7 +281,7 @@ func TestRevertedStateDropped(t *testing.T) {
 	h.OnTxStart(&tracing.VMContext{StateDB: sdb}, ethtypes.NewTx(&ethtypes.LegacyTx{Gas: 100000}), from)
 	h.OnEnter(0, byte(vm.CALL), from, addr, nil, 100000, big.NewInt(0))
 	h.OnStorageChange(addr, slot, common.Hash{}, common.HexToHash("0x5")) // wrote 5, then reverted
-	h.OnNonceChangeV2(created, 0, 1, 0)                                   // created a contract, then reverted
+	h.OnNonceChangeV2(created, 0, 1, 0)                                    // created a contract, then reverted
 	h.OnExit(0, nil, 50000, nil, false)
 	h.OnTxEnd(&ethtypes.Receipt{GasUsed: 60000}, nil)
 
