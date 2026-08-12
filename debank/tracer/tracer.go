@@ -380,6 +380,8 @@ func (t *debankTracer) ToTrace(f *callFrame, traceAddress []int64) dtypes.Trace 
 		if f.RevertReason != "" {
 			err = fmt.Sprintf("%s: %s", f.Error, f.RevertReason)
 		}
+	} else if f.ParentFailed {
+		err = "parent call failed"
 	}
 	return dtypes.Trace{
 		ID:                f.TraceID,
@@ -434,7 +436,7 @@ func (t *debankTracer) addTraceAndLog(cf *callFrame, traceAddress []int64) {
 		}
 	}
 	for i := range cf.Calls {
-		if cf.Calls[i].failed() {
+		if cf.Calls[i].failed() || cf.Calls[i].ParentFailed {
 			t.errorTraces = append(t.errorTraces, t.ToTrace(&cf.Calls[i], childTraceAddress(traceAddress, int64(i))))
 		} else {
 			t.traces = append(t.traces, t.ToTrace(&cf.Calls[i], childTraceAddress(traceAddress, int64(i))))

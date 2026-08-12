@@ -6,13 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/eth/tracers"
+	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/holiman/uint256"
 )
 
@@ -34,10 +34,12 @@ func (m *mockStateDB) GetCodeHash(a common.Address) common.Hash {
 	}
 	return ethtypes.EmptyCodeHash
 }
-func (m *mockStateDB) Exist(a common.Address) bool                               { return m.exist[a] }
-func (m *mockStateDB) GetBalance(common.Address) *uint256.Int                    { return uint256.NewInt(0) }
-func (m *mockStateDB) GetTransientState(common.Address, common.Hash) common.Hash { return common.Hash{} }
-func (m *mockStateDB) GetRefund() uint64                                         { return 0 }
+func (m *mockStateDB) Exist(a common.Address) bool            { return m.exist[a] }
+func (m *mockStateDB) GetBalance(common.Address) *uint256.Int { return uint256.NewInt(0) }
+func (m *mockStateDB) GetTransientState(common.Address, common.Hash) common.Hash {
+	return common.Hash{}
+}
+func (m *mockStateDB) GetRefund() uint64 { return 0 }
 
 func newTestTracer(t *testing.T, txHash common.Hash) *tracers.Tracer {
 	t.Helper()
@@ -68,11 +70,11 @@ func TestEventEmissionOrder(t *testing.T) {
 	h := tr.Hooks
 	h.OnTxStart(nil, ethtypes.NewTx(&ethtypes.LegacyTx{Gas: 100000}), from)
 	h.OnEnter(0, byte(vm.CALL), from, root, nil, 100000, big.NewInt(0))
-	h.OnLog(mkLog(addrA, 0))                                       // root log, before subcall
+	h.OnLog(mkLog(addrA, 0)) // root log, before subcall
 	h.OnEnter(1, byte(vm.CALL), root, child, nil, 50000, big.NewInt(0))
-	h.OnLog(mkLog(addrB, 1))                                       // child log
+	h.OnLog(mkLog(addrB, 1)) // child log
 	h.OnExit(1, nil, 21000, nil, false)
-	h.OnLog(mkLog(addrC, 2))                                       // root log, after subcall
+	h.OnLog(mkLog(addrC, 2)) // root log, after subcall
 	h.OnExit(0, nil, 50000, nil, false)
 	h.OnTxEnd(&ethtypes.Receipt{GasUsed: 60000}, nil)
 
@@ -281,7 +283,7 @@ func TestRevertedStateDropped(t *testing.T) {
 	h.OnTxStart(&tracing.VMContext{StateDB: sdb}, ethtypes.NewTx(&ethtypes.LegacyTx{Gas: 100000}), from)
 	h.OnEnter(0, byte(vm.CALL), from, addr, nil, 100000, big.NewInt(0))
 	h.OnStorageChange(addr, slot, common.Hash{}, common.HexToHash("0x5")) // wrote 5, then reverted
-	h.OnNonceChangeV2(created, 0, 1, 0)                                    // created a contract, then reverted
+	h.OnNonceChangeV2(created, 0, 1, 0)                                   // created a contract, then reverted
 	h.OnExit(0, nil, 50000, nil, false)
 	h.OnTxEnd(&ethtypes.Receipt{GasUsed: 60000}, nil)
 
@@ -299,5 +301,59 @@ func TestRevertedStateDropped(t *testing.T) {
 		if a.Address == crypto.Keccak256Hash(created.Bytes()) {
 			t.Errorf("reverted-create account must not be a NewAccount")
 		}
+	}
+}
+
+func TestFailedParentRoutesWholeSubtreeToErrorTraces(t *testing.T) {
+	txHash := common.HexToHash("0xae")
+	from := common.HexToAddress("0x1")
+	rootAddr := common.HexToAddress("0x2")
+	failedAddr := common.HexToAddress("0x3")
+	successfulDescendantAddr := common.HexToAddress("0x4")
+	failedDescendantAddr := common.HexToAddress("0x5")
+
+	tr := newTestTracer(t, txHash)
+	h := tr.Hooks
+	h.OnTxStart(nil, ethtypes.NewTx(&ethtypes.LegacyTx{Gas: 100000}), from)
+	h.OnEnter(0, byte(vm.CALL), from, rootAddr, nil, 100000, big.NewInt(0))
+	h.OnEnter(1, byte(vm.CALL), rootAddr, failedAddr, nil, 80000, big.NewInt(0))
+	h.OnEnter(2, byte(vm.CALL), failedAddr, successfulDescendantAddr, nil, 40000, big.NewInt(0))
+	h.OnLog(&ethtypes.Log{Address: successfulDescendantAddr, Index: 7})
+	h.OnExit(2, nil, 10000, nil, false)
+	h.OnEnter(2, byte(vm.CALL), failedAddr, failedDescendantAddr, nil, 40000, big.NewInt(0))
+	h.OnExit(2, nil, 40000, vm.ErrOutOfGas, true)
+	h.OnExit(1, nil, 70000, vm.ErrExecutionReverted, true)
+	h.OnExit(0, nil, 90000, nil, false)
+	h.OnTxEnd(&ethtypes.Receipt{GasUsed: 90000}, nil)
+
+	raw, _ := tr.GetResult()
+	var res dtypes.TraceResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(res.Traces) != 1 || len(res.ErrorTraces) != 3 {
+		t.Fatalf("want 1 trace + 3 error traces, got %d + %d", len(res.Traces), len(res.ErrorTraces))
+	}
+	findTrace := func(address common.Address) dtypes.Trace {
+		want := strings.ToLower(address.Hex())
+		for _, trace := range res.ErrorTraces {
+			if trace.To == want {
+				return trace
+			}
+		}
+		t.Fatalf("error trace to %s not found", want)
+		return dtypes.Trace{}
+	}
+	if got := findTrace(failedAddr).Error; got != vm.ErrExecutionReverted.Error() {
+		t.Errorf("failed call error = %q", got)
+	}
+	if got := findTrace(successfulDescendantAddr).Error; got != "parent call failed" {
+		t.Errorf("successful descendant error = %q", got)
+	}
+	if got := findTrace(failedDescendantAddr).Error; got != vm.ErrOutOfGas.Error() {
+		t.Errorf("failed descendant error = %q", got)
+	}
+	if len(res.Events) != 0 || len(res.ErrorEvents) != 1 {
+		t.Errorf("events/error_events = %d/%d, want 0/1", len(res.Events), len(res.ErrorEvents))
 	}
 }
