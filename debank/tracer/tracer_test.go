@@ -301,3 +301,57 @@ func TestRevertedStateDropped(t *testing.T) {
 		}
 	}
 }
+
+func TestFailedParentRoutesWholeSubtreeToErrorTraces(t *testing.T) {
+	txHash := common.HexToHash("0xae")
+	from := common.HexToAddress("0x1")
+	rootAddr := common.HexToAddress("0x2")
+	failedAddr := common.HexToAddress("0x3")
+	successfulDescendantAddr := common.HexToAddress("0x4")
+	failedDescendantAddr := common.HexToAddress("0x5")
+
+	tr := newTestTracer(t, txHash)
+	h := tr.Hooks
+	h.OnTxStart(nil, ethtypes.NewTx(&ethtypes.LegacyTx{Gas: 100000}), from)
+	h.OnEnter(0, byte(vm.CALL), from, rootAddr, nil, 100000, big.NewInt(0))
+	h.OnEnter(1, byte(vm.CALL), rootAddr, failedAddr, nil, 80000, big.NewInt(0))
+	h.OnEnter(2, byte(vm.CALL), failedAddr, successfulDescendantAddr, nil, 40000, big.NewInt(0))
+	h.OnLog(&ethtypes.Log{Address: successfulDescendantAddr, Index: 7})
+	h.OnExit(2, nil, 10000, nil, false)
+	h.OnEnter(2, byte(vm.CALL), failedAddr, failedDescendantAddr, nil, 40000, big.NewInt(0))
+	h.OnExit(2, nil, 40000, vm.ErrOutOfGas, true)
+	h.OnExit(1, nil, 70000, vm.ErrExecutionReverted, true)
+	h.OnExit(0, nil, 90000, nil, false)
+	h.OnTxEnd(&ethtypes.Receipt{GasUsed: 90000}, nil)
+
+	raw, _ := tr.GetResult()
+	var res dtypes.TraceResult
+	if err := json.Unmarshal(raw, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(res.Traces) != 1 || len(res.ErrorTraces) != 3 {
+		t.Fatalf("want 1 trace + 3 error traces, got %d + %d", len(res.Traces), len(res.ErrorTraces))
+	}
+	findTrace := func(address common.Address) dtypes.Trace {
+		want := strings.ToLower(address.Hex())
+		for _, trace := range res.ErrorTraces {
+			if trace.To == want {
+				return trace
+			}
+		}
+		t.Fatalf("error trace to %s not found", want)
+		return dtypes.Trace{}
+	}
+	if got := findTrace(failedAddr).Error; got != vm.ErrExecutionReverted.Error() {
+		t.Errorf("failed call error = %q", got)
+	}
+	if got := findTrace(successfulDescendantAddr).Error; got != "parent call failed" {
+		t.Errorf("successful descendant error = %q", got)
+	}
+	if got := findTrace(failedDescendantAddr).Error; got != vm.ErrOutOfGas.Error() {
+		t.Errorf("failed descendant error = %q", got)
+	}
+	if len(res.Events) != 0 || len(res.ErrorEvents) != 1 {
+		t.Errorf("events/error_events = %d/%d, want 0/1", len(res.Events), len(res.ErrorEvents))
+	}
+}
