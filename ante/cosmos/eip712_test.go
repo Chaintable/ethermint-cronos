@@ -7,9 +7,12 @@ import (
 	sdkmath "cosmossdk.io/math"
 	abci "github.com/cometbft/cometbft/abci/types"
 	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
+	"github.com/cosmos/cosmos-sdk/client"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/x/feegrant"
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 	"github.com/evmos/ethermint/crypto/ethsecp256k1"
+	"github.com/evmos/ethermint/evmd"
 	"github.com/evmos/ethermint/testutil"
 	utiltx "github.com/evmos/ethermint/testutil/tx"
 	"github.com/stretchr/testify/require"
@@ -88,6 +91,124 @@ func TestLegacyEIP712MixedMsg(t *testing.T) {
 	require.NotZero(t, res.TxResults[0].Code, "expected tx to fail with mixed message types")
 	require.Contains(t, res.TxResults[0].Log, "different types of messages detected",
 		"expected error about different message types")
+}
+
+func TestLegacyEIP712UnsignedFieldMutation(t *testing.T) {
+	testCases := []struct {
+		name     string
+		malleate func(t *testing.T, app *evmd.EthermintApp, ctx sdk.Context, signer sdk.AccAddress, builder client.TxBuilder)
+		expErr   string
+	}{
+		{
+			name: "unmodified tx succeeds",
+		},
+		{
+			name: "body timeout height mutated to nonzero after signing is rejected",
+			malleate: func(_ *testing.T, _ *evmd.EthermintApp, _ sdk.Context, _ sdk.AccAddress, builder client.TxBuilder) {
+				builder.SetTimeoutHeight(1_000_000)
+			},
+			expErr: "legacy EIP-712 signing does not commit timeout_height, so it must be 0",
+		},
+		{
+			name: "fee granter set after signing is rejected even with a live allowance",
+			malleate: func(t *testing.T, app *evmd.EthermintApp, ctx sdk.Context, signer sdk.AccAddress, builder client.TxBuilder) {
+				granterKey, err := ethsecp256k1.GenerateKey()
+				require.NoError(t, err)
+				granter := sdk.AccAddress(granterKey.PubKey().Address().Bytes())
+				app.AccountKeeper.SetAccount(ctx, app.AccountKeeper.NewAccountWithAddress(ctx, granter))
+				require.NoError(t, testutil.FundAccount(app.BankKeeper, ctx, granter, builder.GetTx().GetFee()))
+				// A real grant so the rejection comes from signature verification, not fee deduction.
+				require.NoError(t, app.FeeGrantKeeper.GrantAllowance(ctx, granter, signer, &feegrant.BasicAllowance{}))
+				builder.SetFeeGranter(granter)
+			},
+			expErr: "legacy EIP-712 signing does not commit fee granter, so it must be empty",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := testutil.Setup(false, nil)
+			ctx := app.BaseApp.NewUncachedContext(false, tmproto.Header{ChainID: testutil.ChainID})
+			app.FeeMarketKeeper.SetBaseFee(ctx, big.NewInt(1))
+
+			privKey, err := ethsecp256k1.GenerateKey()
+			require.NoError(t, err)
+			delegator := sdk.AccAddress(privKey.PubKey().Address().Bytes())
+
+			acc := app.AccountKeeper.NewAccountWithAddress(ctx, delegator)
+			app.AccountKeeper.SetAccount(ctx, acc)
+
+			bondDenom, err := app.StakingKeeper.BondDenom(ctx)
+			require.NoError(t, err)
+			evmDenom := app.EvmKeeper.GetParams(ctx).EvmDenom
+			gas := uint64(500000)
+			delegationAmount := sdk.NewCoin(bondDenom, sdkmath.NewInt(100))
+			feeAmount := sdk.NewCoins(sdk.NewCoin(evmDenom, sdkmath.NewInt(100*int64(gas))))
+
+			require.NoError(t, testutil.FundAccount(
+				app.BankKeeper,
+				ctx,
+				delegator,
+				sdk.NewCoins(
+					sdk.NewCoin(bondDenom, delegationAmount.Amount.MulRaw(10)),
+					sdk.NewCoin(evmDenom, feeAmount.AmountOf(evmDenom).MulRaw(2)),
+				),
+			))
+
+			var valAddr sdk.ValAddress
+			err = app.StakingKeeper.IterateValidators(ctx, func(_ int64, val stakingtypes.ValidatorI) bool {
+				bz, err := app.StakingKeeper.ValidatorAddressCodec().StringToBytes(val.GetOperator())
+				require.NoError(t, err)
+				valAddr = sdk.ValAddress(bz)
+				return true
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, valAddr)
+
+			msgs := []sdk.Msg{
+				stakingtypes.NewMsgDelegate(delegator.String(), valAddr.String(), delegationAmount),
+			}
+
+			txArgs := utiltx.EIP712TxArgs{
+				CosmosTxArgs: utiltx.CosmosTxArgs{
+					TxCfg:   app.TxConfig(),
+					Priv:    privKey,
+					ChainID: testutil.ChainID,
+					Gas:     gas,
+					Fees:    feeAmount,
+					Msgs:    msgs,
+				},
+				UseLegacyExtension: true,
+				UseLegacyTypedData: true,
+			}
+
+			builder, err := utiltx.PrepareEIP712CosmosTx(ctx, app, txArgs)
+			require.NoError(t, err)
+
+			if tc.malleate != nil {
+				// Mutate after signing: the signature stays over the original typed data.
+				tc.malleate(t, app, ctx, delegator, builder)
+			}
+
+			txBytes, err := app.TxConfig().TxEncoder()(builder.GetTx())
+			require.NoError(t, err)
+			height := app.LastBlockHeight() + 1
+			res, err := app.FinalizeBlock(&abci.RequestFinalizeBlock{
+				Height: height,
+				Txs:    [][]byte{txBytes},
+			})
+			require.NoError(t, err)
+			require.Len(t, res.TxResults, 1)
+
+			if tc.expErr == "" {
+				require.Zero(t, res.TxResults[0].Code, "expected tx to succeed, log: %s", res.TxResults[0].Log)
+				return
+			}
+
+			require.NotZero(t, res.TxResults[0].Code, "expected tx to fail")
+			require.Contains(t, res.TxResults[0].Log, tc.expErr)
+		})
+	}
 }
 
 // TestLegacyEIP712SameMsgType tests that a legacy EIP-712 transaction with

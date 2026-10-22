@@ -1,15 +1,21 @@
 package rpc
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"testing"
 
+	"cosmossdk.io/log/v2"
 	"github.com/stretchr/testify/require"
 )
 
 func TestIsOriginAllowed(t *testing.T) {
 	t.Run("emptyOriginAllowedWhenNoAllowlist", func(t *testing.T) {
-		s := &websocketsServer{wsOriginAllowAll: false, wsOrigins: map[string]struct{}{}}
+		s := &websocketsServer{
+			wsOriginAllowAll: false,
+			wsOrigins:        map[string]struct{}{},
+		}
 		require.True(t, s.isOriginAllowed(""))
 		require.False(t, s.isOriginAllowed("http://example.com"))
 	})
@@ -17,7 +23,9 @@ func TestIsOriginAllowed(t *testing.T) {
 	t.Run("allowlistEnforced", func(t *testing.T) {
 		s := &websocketsServer{
 			wsOriginAllowAll: false,
-			wsOrigins:        map[string]struct{}{"http://allowed.example": {}},
+			wsOrigins: map[string]struct{}{
+				"http://allowed.example": {},
+			},
 		}
 		require.True(t, s.isOriginAllowed(""))
 		require.True(t, s.isOriginAllowed("http://allowed.example"))
@@ -26,7 +34,9 @@ func TestIsOriginAllowed(t *testing.T) {
 	})
 
 	t.Run("allowAll", func(t *testing.T) {
-		s := &websocketsServer{wsOriginAllowAll: true}
+		s := &websocketsServer{
+			wsOriginAllowAll: true,
+		}
 		require.True(t, s.isOriginAllowed(""))
 		require.True(t, s.isOriginAllowed("http://any.example"))
 	})
@@ -34,7 +44,9 @@ func TestIsOriginAllowed(t *testing.T) {
 
 func TestNamespaceAllowed(t *testing.T) {
 	t.Run("allowed", func(t *testing.T) {
-		s := &websocketsServer{allowedAPIs: buildAllowedAPIs([]string{"eth", "net"})}
+		s := &websocketsServer{
+			allowedAPIs: buildAllowedAPIs([]string{"eth", "net"}),
+		}
 		require.True(t, s.namespaceAllowed("eth"))
 		require.True(t, s.namespaceAllowed("ETH"))
 		require.False(t, s.namespaceAllowed("web3"))
@@ -89,5 +101,51 @@ func TestFilterBatchEthSubscriptions(t *testing.T) {
 		require.True(t, hasItems)
 		require.Equal(t, 0, blocked)
 		require.Equal(t, raw, got)
+	})
+}
+
+// TestWebsocketsServerStartBindError ensures Start() returns bind failures
+// to the caller instead of swallowing them in the serve goroutine.
+func TestWebsocketsServerStartBindError(t *testing.T) {
+	t.Run("bind failure is returned", func(t *testing.T) {
+		// occupy an ephemeral port, then point the WS server at the same address
+		occupied, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = occupied.Close() })
+
+		s := &websocketsServer{
+			wsAddr: occupied.Addr().String(),
+			logger: log.NewNopLogger(),
+		}
+		require.Error(t, s.Start())
+	})
+
+	t.Run("successful bind returns nil", func(t *testing.T) {
+		s := &websocketsServer{
+			wsAddr: "127.0.0.1:0", // ephemeral free port
+			logger: log.NewNopLogger(),
+		}
+		require.NoError(t, s.Start())
+		// Stop() unwinds the serve goroutine so it doesn't leak
+		t.Cleanup(func() {
+			_ = s.Stop(context.Background())
+		})
+	})
+
+	t.Run("Stop before Start is a no-op", func(t *testing.T) {
+		s := &websocketsServer{logger: log.NewNopLogger()}
+		require.NoError(t, s.Stop(context.Background()))
+	})
+
+	t.Run("bad TLS keypair is returned", func(t *testing.T) {
+		// a bad cert/key is loaded inside ServeTLS; ensure Start() surfaces it
+		// synchronously instead of swallowing it in the serve goroutine
+		s := &websocketsServer{
+			wsAddr:   "127.0.0.1:0", // ephemeral free port
+			certFile: "/nonexistent/cert.pem",
+			keyFile:  "/nonexistent/key.pem",
+			logger:   log.NewNopLogger(),
+		}
+		require.Error(t, s.Start())
 	})
 }

@@ -5,10 +5,9 @@ import (
 	"math/big"
 	"testing"
 
-	"cosmossdk.io/log"
-	"cosmossdk.io/store/metrics"
-	"cosmossdk.io/store/rootmulti"
-	storetypes "cosmossdk.io/store/types"
+	"cosmossdk.io/log/v2"
+	"github.com/cosmos/cosmos-sdk/store/v2/rootmulti"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	dbm "github.com/cosmos/cosmos-db"
 	sdkaddress "github.com/cosmos/cosmos-sdk/codec/address"
@@ -90,7 +89,7 @@ func (suite *StateDBTestSuite) TestAccount() {
 
 			// create a contract account
 			db.CreateAccount(address)
-			db.SetCode(address, []byte("hello world"))
+			db.SetCode(address, []byte("hello world"), 0)
 			db.AddBalance(address, uint256.NewInt(100), tracing.BalanceChangeTransfer)
 			db.SetState(address, key1, value1)
 			db.SetState(address, key2, value2)
@@ -311,7 +310,7 @@ func (suite *StateDBTestSuite) TestCode() {
 			db.CreateAccount(address)
 		}, nil, common.BytesToHash(emptyCodeHash)},
 		{"set code", func(db vm.StateDB) {
-			db.SetCode(address, code)
+			db.SetCode(address, code, 0)
 		}, code, codeHash},
 	}
 
@@ -360,11 +359,11 @@ func (suite *StateDBTestSuite) TestRevertSnapshot() {
 			db.CreateAccount(address)
 		}},
 		{"set code", func(db vm.StateDB) {
-			db.SetCode(address, []byte("hello world"))
+			db.SetCode(address, []byte("hello world"), 0)
 		}},
 		{"self destruct", func(db vm.StateDB) {
 			db.SetState(address, v1, v2)
-			db.SetCode(address, []byte("hello world"))
+			db.SetCode(address, []byte("hello world"), 0)
 			db.SelfDestruct(address)
 			suite.Require().True(db.HasSelfDestructed(address))
 		}},
@@ -392,7 +391,7 @@ func (suite *StateDBTestSuite) TestRevertSnapshot() {
 				db := statedb.New(ctx, keeper, emptyTxConfig)
 				db.SetNonce(address, 1, tracing.NonceChangeUnspecified)
 				db.AddBalance(address, uint256.NewInt(100), tracing.BalanceChangeTransfer)
-				db.SetCode(address, []byte("hello world"))
+				db.SetCode(address, []byte("hello world"), 0)
 				db.SetState(address, v1, v2)
 				db.SetNonce(address2, 1, tracing.NonceChangeUnspecified)
 				suite.Require().NoError(db.Commit())
@@ -820,15 +819,16 @@ func newTestKeeper(t *testing.T, cms storetypes.MultiStore) (sdk.Context, *evmke
 		sdk.GetConfig().GetBech32AccountAddrPrefix(),
 		authAddr,
 	)
-	bankKeeper := bankkeeper.NewBaseKeeper(
+
+	bk := bankkeeper.NewBaseKeeper(
 		appCodec,
 		runtime.NewKVStoreService(testStoreKeys[banktypes.StoreKey]),
-		testObjKeys[banktypes.ObjectStoreKey],
 		accountKeeper,
 		map[string]bool{},
 		authAddr,
 		log.NewNopLogger(),
 	)
+	bankKeeper := bk.WithObjStoreKey(testObjKeys[banktypes.ObjectStoreKey])
 	evmKeeper := evmkeeper.NewKeeper(
 		appCodec,
 		testStoreKeys[evmtypes.StoreKey], testObjKeys[evmtypes.ObjectStoreKey], authtypes.NewModuleAddress(govtypes.ModuleName),
@@ -845,7 +845,7 @@ func newTestKeeper(t *testing.T, cms storetypes.MultiStore) (sdk.Context, *evmke
 
 func setupTestEnv(t *testing.T) (storetypes.MultiStore, sdk.Context, *evmkeeper.Keeper) {
 	db := dbm.NewMemDB()
-	cms := rootmulti.NewStore(db, log.NewNopLogger(), metrics.NewNoOpMetrics())
+	cms := rootmulti.NewStore(db, log.NewNopLogger())
 	for _, key := range testStoreKeys {
 		cms.MountStoreWithDB(key, storetypes.StoreTypeIAVL, nil)
 	}
@@ -859,6 +859,270 @@ func setupTestEnv(t *testing.T) (storetypes.MultiStore, sdk.Context, *evmkeeper.
 		EvmDenom: "uphoton",
 	}))
 	return cms, ctx, keeper
+}
+
+// TestNestedStateDBConflictDetection verifies that Commit() returns an error when
+// both the outer EVM dirty storage and an inner native action (via ExecuteNativeAction)
+// modify the same storage key, enforcing the non-overlap invariant.
+func (suite *StateDBTestSuite) TestNestedStateDBConflictDetection() {
+	_, ctx, keeper := setupTestEnv(suite.T())
+
+	contract := common.BigToAddress(big.NewInt(999))
+	storageKey := common.BigToHash(big.NewInt(1))
+	initVal := common.BigToHash(big.NewInt(1000))
+
+	// Setup: write initial value and commit it
+	db := statedb.New(ctx, keeper, emptyTxConfig)
+	db.CreateAccount(contract)
+	db.SetState(contract, storageKey, initVal)
+	suite.Require().NoError(db.Commit())
+
+	// Outer EVM: read the key (populates originStorage), then dirty it
+	db = statedb.New(ctx, keeper, emptyTxConfig)
+	state := db.GetState(contract, storageKey)
+	suite.Require().Equal(initVal, state, "outer should read initial value")
+	db.SetState(contract, storageKey, common.BigToHash(big.NewInt(10)))
+
+	// Inner native action modifies the same storage key via keeper directly
+	db.ExecuteNativeAction(contract, nil, func(innerCtx sdk.Context) error {
+		innerDB := statedb.NewWithParams(innerCtx, keeper, emptyTxConfig, "uphoton")
+		innerDB.SetState(contract, storageKey, common.BigToHash(big.NewInt(1100)))
+		return innerDB.Commit()
+	})
+
+	// Commit should fail: outer dirty and inner native action both wrote to storageKey
+	err := db.Commit()
+	suite.Require().Error(err)
+	suite.Require().Contains(err.Error(), "state conflict")
+}
+
+// TestNestedStateDBNoConflict verifies that Commit() succeeds when the outer EVM and
+// an inner native action modify different storage keys (non-overlapping writes).
+func (suite *StateDBTestSuite) TestNestedStateDBNoConflict() {
+	_, ctx, keeper := setupTestEnv(suite.T())
+
+	contract := common.BigToAddress(big.NewInt(998))
+	keyA := common.BigToHash(big.NewInt(1))
+	keyB := common.BigToHash(big.NewInt(2))
+	initA := common.BigToHash(big.NewInt(100))
+	initB := common.BigToHash(big.NewInt(200))
+
+	// Setup: write initial values
+	db := statedb.New(ctx, keeper, emptyTxConfig)
+	db.CreateAccount(contract)
+	db.SetState(contract, keyA, initA)
+	db.SetState(contract, keyB, initB)
+	suite.Require().NoError(db.Commit())
+
+	// Outer EVM: dirty key A only
+	db = statedb.New(ctx, keeper, emptyTxConfig)
+	db.GetState(contract, keyA) // populate originStorage
+	db.SetState(contract, keyA, common.BigToHash(big.NewInt(150)))
+
+	// Inner native action: modify key B only (no overlap)
+	db.ExecuteNativeAction(contract, nil, func(innerCtx sdk.Context) error {
+		innerDB := statedb.NewWithParams(innerCtx, keeper, emptyTxConfig, "uphoton")
+		innerDB.GetState(contract, keyB) // populate originStorage
+		innerDB.SetState(contract, keyB, common.BigToHash(big.NewInt(250)))
+		return innerDB.Commit()
+	})
+
+	// Commit should succeed: no overlapping keys
+	suite.Require().NoError(db.Commit())
+
+	// Verify both values persisted correctly
+	suite.Require().Equal(common.BigToHash(big.NewInt(150)), keeper.GetState(ctx, contract, keyA))
+	suite.Require().Equal(common.BigToHash(big.NewInt(250)), keeper.GetState(ctx, contract, keyB))
+}
+
+// TestNestedStateDBInnerOnlyWrite verifies that Commit() succeeds when only the inner
+// native action modifies a storage key (outer has no dirty write for that key).
+func (suite *StateDBTestSuite) TestNestedStateDBInnerOnlyWrite() {
+	_, ctx, keeper := setupTestEnv(suite.T())
+
+	contract := common.BigToAddress(big.NewInt(997))
+	storageKey := common.BigToHash(big.NewInt(1))
+	initVal := common.BigToHash(big.NewInt(500))
+
+	// Setup
+	db := statedb.New(ctx, keeper, emptyTxConfig)
+	db.CreateAccount(contract)
+	db.SetState(contract, storageKey, initVal)
+	suite.Require().NoError(db.Commit())
+
+	// Outer EVM: does NOT write to storageKey
+	db = statedb.New(ctx, keeper, emptyTxConfig)
+
+	innerVal := common.BigToHash(big.NewInt(600))
+	// Inner native action: modify the key
+	db.ExecuteNativeAction(contract, nil, func(innerCtx sdk.Context) error {
+		innerDB := statedb.NewWithParams(innerCtx, keeper, emptyTxConfig, "uphoton")
+		innerDB.GetState(contract, storageKey)
+		innerDB.SetState(contract, storageKey, innerVal)
+		return innerDB.Commit()
+	})
+
+	// Commit should succeed: outer has no dirty write for storageKey
+	suite.Require().NoError(db.Commit())
+
+	// Inner's value persists
+	suite.Require().Equal(innerVal, keeper.GetState(ctx, contract, storageKey))
+}
+
+// TestReentryAttack checks that a conflict between EVM-dirty storage (outer) and a nested
+// native write (inner) is detected and that the failed tx does not persist the outer’s dirty
+// value. Before the fix, Commit could succeed and apply 10, clobbering the inner write.
+func (suite *StateDBTestSuite) TestReentryAttack() {
+	_, ctx, keeper := setupTestEnv(suite.T())
+
+	newContext, commit := ctx.CacheContext()
+
+	contract := common.BigToAddress(big.NewInt(999))
+	storageKey := common.BigToHash(big.NewInt(1))
+	initVal := common.BigToHash(big.NewInt(1000))
+
+	// Last successful state on this branch: storage = 1000.
+	outerDB := statedb.New(newContext, keeper, emptyTxConfig)
+	outerDB.CreateAccount(contract)
+	outerDB.SetState(contract, storageKey, initVal)
+	suite.Require().NoError(outerDB.Commit())
+
+	// Outer EVM pass: load 1000 from state, then mark the slot dirty as 10 (e.g. transfer out).
+	outerDB = statedb.New(newContext, keeper, emptyTxConfig)
+	state := outerDB.GetState(contract, storageKey)
+	suite.Require().Equal(initVal, state, "outer should read initial value of 1000")
+	outerDB.SetState(contract, storageKey, common.BigToHash(big.NewInt(10)))
+
+	// Inner native pass: reads the real store (1000), not the outer’s dirty 10; commits 1100.
+	outerDB.ExecuteNativeAction(contract, nil, func(innerCtx sdk.Context) error {
+		innerDB := statedb.NewWithParams(innerCtx, keeper, emptyTxConfig, "uphoton")
+		innerVal := innerDB.GetState(contract, storageKey)
+		suite.Require().Equal(initVal, innerVal, "inner should see 1000, not outer's dirty 10")
+
+		innerDB.SetState(contract, storageKey, common.BigToHash(big.NewInt(1100)))
+		return innerDB.Commit()
+	})
+
+	// Same slot: outer dirty (10) vs inner (1100) → Commit must return ErrStateConflict and
+	// must not flush this tx to the parent store (see Commit() comment in statedb.go).
+	err := outerDB.Commit()
+	suite.Require().Error(err, "Commit should detect the state conflict")
+	suite.Require().Contains(err.Error(), "state conflict")
+
+	// Merge the cache branch into the test root ctx. The parent should still show 1000
+	// (last committed value on the branch). It must not show 10 (outer dirty).
+	commit()
+	finalVal := keeper.GetState(ctx, contract, storageKey)
+	suite.Require().Equal(initVal, finalVal)
+}
+
+// TestNestedStateDBSameValueNoConflict verifies that Commit() succeeds when both
+// the outer EVM and an inner native action write the same value to the same storage key.
+// Even though both sides touched the slot, they agree on the final value, so there is
+// no real conflict.
+func (suite *StateDBTestSuite) TestNestedStateDBSameValueNoConflict() {
+	_, ctx, keeper := setupTestEnv(suite.T())
+
+	contract := common.BigToAddress(big.NewInt(996))
+	storageKey := common.BigToHash(big.NewInt(1))
+	initVal := common.BigToHash(big.NewInt(1000))
+	agreedVal := common.BigToHash(big.NewInt(2000))
+
+	db := statedb.New(ctx, keeper, emptyTxConfig)
+	db.CreateAccount(contract)
+	db.SetState(contract, storageKey, initVal)
+	suite.Require().NoError(db.Commit())
+
+	db = statedb.New(ctx, keeper, emptyTxConfig)
+	state := db.GetState(contract, storageKey)
+	suite.Require().Equal(initVal, state, "outer should read initial value")
+	db.SetState(contract, storageKey, agreedVal)
+
+	db.ExecuteNativeAction(contract, nil, func(innerCtx sdk.Context) error {
+		innerDB := statedb.NewWithParams(innerCtx, keeper, emptyTxConfig, "uphoton")
+		innerDB.GetState(contract, storageKey)
+		innerDB.SetState(contract, storageKey, agreedVal)
+		return innerDB.Commit()
+	})
+
+	suite.Require().NoError(db.Commit())
+
+	suite.Require().Equal(agreedVal, keeper.GetState(ctx, contract, storageKey))
+}
+
+// TestSelfDestructPostDestructionBalanceBurned verifies that any balance credited to a
+// self-destructed address within the same transaction is burned at commit time rather
+// than left as an orphaned bank balance recoverable by recreating the address.
+func (suite *StateDBTestSuite) TestSelfDestructPostDestructionBalanceBurned() {
+	raw, ctx, keeper := setupTestEnv(suite.T())
+
+	// Setup: create a contract account with initial balance and code.
+	db := statedb.New(ctx, keeper, emptyTxConfig)
+	db.CreateAccount(address)
+	db.CreateContract(address)
+	db.SetCode(address, []byte("contract code"), 0)
+	db.AddBalance(address, uint256.NewInt(100), tracing.BalanceChangeTransfer)
+	suite.Require().NoError(db.Commit())
+
+	ctx, keeper = newTestKeeper(suite.T(), raw)
+
+	// Phase 1: Self-destruct the contract; its initial balance (100) must be burned.
+	db = statedb.New(ctx, keeper, emptyTxConfig)
+	db.SelfDestruct(address)
+	suite.Require().True(db.HasSelfDestructed(address))
+	suite.Require().Equal(uint256.NewInt(0), db.GetBalance(address))
+
+	// Phase 2: Send value to the already-destroyed address in the same transaction.
+	// This simulates a CALL with value to a self-destructed contract.
+	postDestructValue := uint256.NewInt(500)
+	db.AddBalance(address, postDestructValue, tracing.BalanceChangeTransfer)
+	suite.Require().Equal(postDestructValue, db.GetBalance(address))
+
+	suite.Require().NoError(db.Commit())
+
+	// After commit: account metadata must be gone.
+	ctx, keeper = newTestKeeper(suite.T(), raw)
+	suite.Require().Nil(keeper.GetAccount(ctx, address))
+
+	// The post-destruction balance must be burned (zero), not preserved.
+	cosmosAddr := sdk.AccAddress(address.Bytes())
+	balance := keeper.GetBalance(ctx, cosmosAddr, "uphoton")
+	suite.Require().True(balance.IsZero(), "post-selfdestruct balance must be burned at commit")
+}
+
+// TestSelfDestructNoPostDestructionBalance verifies that the normal self-destruct path
+// (no post-destruction transfers) still works correctly after the fix.
+func (suite *StateDBTestSuite) TestSelfDestructNoPostDestructionBalance() {
+	raw, ctx, keeper := setupTestEnv(suite.T())
+
+	db := statedb.New(ctx, keeper, emptyTxConfig)
+	db.CreateAccount(address)
+	db.CreateContract(address)
+	db.SetCode(address, []byte("contract code"), 0)
+	db.AddBalance(address, uint256.NewInt(200), tracing.BalanceChangeTransfer)
+	suite.Require().NoError(db.Commit())
+
+	ctx, keeper = newTestKeeper(suite.T(), raw)
+
+	db = statedb.New(ctx, keeper, emptyTxConfig)
+	db.SelfDestruct(address)
+	suite.Require().NoError(db.Commit())
+
+	ctx, keeper = newTestKeeper(suite.T(), raw)
+	suite.Require().Nil(keeper.GetAccount(ctx, address))
+
+	cosmosAddr := sdk.AccAddress(address.Bytes())
+	balance := keeper.GetBalance(ctx, cosmosAddr, "uphoton")
+	suite.Require().True(balance.IsZero(), "post-selfdestruct balance must be 0 after normal selfdestruct path")
+}
+
+func (suite *StateDBTestSuite) TestDoubleCommit() {
+	_, ctx, keeper := setupTestEnv(suite.T())
+	db := statedb.New(ctx, keeper, emptyTxConfig)
+	suite.Require().NoError(db.Commit())
+	err := db.Commit()
+	suite.Require().Error(err)
+	suite.Require().Contains(err.Error(), "already committed")
 }
 
 func TestStateDBTestSuite(t *testing.T) {

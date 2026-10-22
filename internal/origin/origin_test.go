@@ -13,20 +13,86 @@ func TestNormalize(t *testing.T) {
 		wantOut   string
 		wantValid bool
 	}{
-		{name: "empty", input: "", wantValid: false},
-		{name: "whitespaceOnly", input: "   ", wantValid: false},
-		{name: "noScheme", input: "example.com", wantValid: false},
-		{name: "noHost", input: "http://", wantValid: false},
-		{name: "simple", input: "http://example.com", wantOut: "http://example.com", wantValid: true},
-		{name: "uppercaseSchemeAndHost", input: "HTTP://EXAMPLE.COM", wantOut: "http://example.com", wantValid: true},
-		{name: "trailingSlash", input: "http://example.com/", wantOut: "http://example.com", wantValid: true},
-		{name: "withPath", input: "http://example.com/some/path", wantOut: "http://example.com", wantValid: true},
-		{name: "leadingTrailingSpace", input: "  http://example.com  ", wantOut: "http://example.com", wantValid: true},
-		{name: "httpDefaultPort80Stripped", input: "http://example.com:80", wantOut: "http://example.com", wantValid: true},
-		{name: "httpsDefaultPort443Stripped", input: "https://example.com:443", wantOut: "https://example.com", wantValid: true},
-		{name: "nonDefaultPortKept", input: "http://example.com:8080", wantOut: "http://example.com:8080", wantValid: true},
-		{name: "httpsNonDefaultPort", input: "https://example.com:8443", wantOut: "https://example.com:8443", wantValid: true},
-		{name: "websocketScheme", input: "ws://example.com", wantOut: "ws://example.com", wantValid: true},
+		{
+			name:      "empty",
+			input:     "",
+			wantValid: false,
+		},
+		{
+			name:      "whitespaceOnly",
+			input:     "   ",
+			wantValid: false,
+		},
+		{
+			name:      "noScheme",
+			input:     "example.com",
+			wantValid: false,
+		},
+		{
+			name:      "noHost",
+			input:     "http://",
+			wantValid: false,
+		},
+		{
+			name:      "simple",
+			input:     "http://example.com",
+			wantOut:   "http://example.com",
+			wantValid: true,
+		},
+		{
+			name:      "uppercaseSchemeAndHost",
+			input:     "HTTP://EXAMPLE.COM",
+			wantOut:   "http://example.com",
+			wantValid: true,
+		},
+		{
+			name:      "trailingSlash",
+			input:     "http://example.com/",
+			wantOut:   "http://example.com",
+			wantValid: true,
+		},
+		{
+			name:      "withPath",
+			input:     "http://example.com/some/path",
+			wantOut:   "http://example.com",
+			wantValid: true,
+		},
+		{
+			name:      "leadingTrailingSpace",
+			input:     "  http://example.com  ",
+			wantOut:   "http://example.com",
+			wantValid: true,
+		},
+		{
+			name:      "httpDefaultPort80Stripped",
+			input:     "http://example.com:80",
+			wantOut:   "http://example.com",
+			wantValid: true,
+		},
+		{
+			name:      "httpsDefaultPort443Stripped",
+			input:     "https://example.com:443",
+			wantOut:   "https://example.com",
+			wantValid: true,
+		},
+		{
+			name:      "nonDefaultPortKept",
+			input:     "http://example.com:8080",
+			wantOut:   "http://example.com:8080",
+			wantValid: true,
+		},
+		{
+			name:      "httpsNonDefaultPort",
+			input:     "https://example.com:8443",
+			wantOut:   "https://example.com:8443",
+			wantValid: true,
+		},
+		{
+			name:      "websocketScheme",
+			input:     "ws://example.com",
+			wantOut:   "ws://example.com",
+			wantValid: true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,14 +176,18 @@ func TestIsAllowed(t *testing.T) {
 	})
 
 	t.Run("allowlistEnforced", func(t *testing.T) {
-		allowlist := map[string]struct{}{"http://allowed.example": {}}
+		allowlist := map[string]struct{}{
+			"http://allowed.example": {},
+		}
 		require.True(t, IsAllowed("http://allowed.example", false, allowlist))
 		require.True(t, IsAllowed("HTTP://ALLOWED.EXAMPLE:80/", false, allowlist))
 		require.False(t, IsAllowed("http://blocked.example", false, allowlist))
 	})
 
 	t.Run("invalidOriginBlocked", func(t *testing.T) {
-		allowlist := map[string]struct{}{"http://allowed.example": {}}
+		allowlist := map[string]struct{}{
+			"http://allowed.example": {},
+		}
 		require.False(t, IsAllowed("not-a-url", false, allowlist))
 	})
 }

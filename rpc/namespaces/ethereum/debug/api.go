@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"runtime"
 	"runtime/debug"
 	"runtime/pprof"
@@ -35,7 +34,7 @@ import (
 
 	"github.com/cosmos/cosmos-sdk/server"
 
-	"cosmossdk.io/log"
+	"cosmossdk.io/log/v2"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rlp"
@@ -127,6 +126,30 @@ func (a *API) TraceCall(
 	return a.backend.TraceCall(args, blockNrOrHash, config)
 }
 
+// GetRawReceipts retrieves the binary-encoded receipts of a single block.
+func (a *API) GetRawReceipts(blockNrOrHash rpctypes.BlockNumberOrHash) ([]hexutil.Bytes, error) {
+	a.logger.Debug("debug_getRawReceipts", "block number or hash", blockNrOrHash)
+	return a.backend.GetRawReceipts(blockNrOrHash)
+}
+
+// GetRawTransaction returns the bytes of the transaction identified by hash.
+func (a *API) GetRawTransaction(txHash common.Hash) (hexutil.Bytes, error) {
+	a.logger.Debug("debug_getRawTransaction", "hash", txHash)
+	return a.backend.GetRawTransactionByHash(txHash)
+}
+
+// GetRawBlock retrieves the RLP-encoded block of a single block.
+func (a *API) GetRawBlock(blockNrOrHash rpctypes.BlockNumberOrHash) (hexutil.Bytes, error) {
+	a.logger.Debug("debug_getRawBlock", "block number or hash", blockNrOrHash)
+	return a.backend.GetRawBlock(blockNrOrHash)
+}
+
+// GetRawHeader retrieves the RLP encoding of a single header of a block.
+func (a *API) GetRawHeader(blockNrOrHash rpctypes.BlockNumberOrHash) (hexutil.Bytes, error) {
+	a.logger.Debug("debug_getRawHeader", "block number or hash", blockNrOrHash)
+	return a.backend.GetRawHeader(blockNrOrHash)
+}
+
 func parseDuration(nsec uint) (time.Duration, error) {
 	if nsec > uint(time.Duration(1<<63-1)/time.Second) {
 		return time.Duration(0), fmt.Errorf("value %d exceeds maximum duration for time.Duration", nsec)
@@ -147,7 +170,7 @@ func (a *API) BlockProfile(file string, nsec uint) error {
 	defer runtime.SetBlockProfileRate(0)
 
 	time.Sleep(d)
-	return writeProfile("block", file, a.logger)
+	return writeProfile("block", file, a.ctx, a.logger)
 }
 
 // CpuProfile turns on CPU profiling for nsec seconds and writes
@@ -228,12 +251,12 @@ func (a *API) StartCPUProfile(file string) error {
 		a.logger.Debug("CPU profiling already in progress")
 		return errors.New("CPU profiling already in progress")
 	default:
-		fp, err := ExpandHome(file)
+		fp, err := validatePath(a.ctx, file)
 		if err != nil {
 			a.logger.Debug("failed to get filepath for the CPU profile file", "error", err.Error())
 			return err
 		}
-		f, err := os.Create(fp)
+		f, err := restrictedCreate(a.ctx, fp)
 		if err != nil {
 			a.logger.Debug("failed to create CPU profile file", "error", err.Error())
 			return err
@@ -283,7 +306,7 @@ func (a *API) StopCPUProfile() error {
 // WriteBlockProfile writes a goroutine blocking profile to the given file.
 func (a *API) WriteBlockProfile(file string) error {
 	a.logger.Debug("debug_writeBlockProfile", "file", file)
-	return writeProfile("block", file, a.logger)
+	return writeProfile("block", file, a.ctx, a.logger)
 }
 
 // WriteMemProfile writes an allocation profile to the given file.
@@ -291,7 +314,7 @@ func (a *API) WriteBlockProfile(file string) error {
 // it must be set on the command line.
 func (a *API) WriteMemProfile(file string) error {
 	a.logger.Debug("debug_writeMemProfile", "file", file)
-	return writeProfile("heap", file, a.logger)
+	return writeProfile("heap", file, a.ctx, a.logger)
 }
 
 // MutexProfile turns on mutex profiling for nsec seconds and writes profile data to file.
@@ -306,7 +329,7 @@ func (a *API) MutexProfile(file string, nsec uint) error {
 	runtime.SetMutexProfileFraction(1)
 	time.Sleep(d)
 	defer runtime.SetMutexProfileFraction(0)
-	return writeProfile("mutex", file, a.logger)
+	return writeProfile("mutex", file, a.ctx, a.logger)
 }
 
 // SetMutexProfileFraction sets the rate of mutex profiling.
@@ -318,7 +341,7 @@ func (a *API) SetMutexProfileFraction(rate int) {
 // WriteMutexProfile writes a goroutine blocking profile to the given file.
 func (a *API) WriteMutexProfile(file string) error {
 	a.logger.Debug("debug_writeMutexProfile", "file", file)
-	return writeProfile("mutex", file, a.logger)
+	return writeProfile("mutex", file, a.ctx, a.logger)
 }
 
 // FreeOSMemory forces a garbage collection.

@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"cosmossdk.io/log"
+	"cosmossdk.io/log/v2"
 	"github.com/bytedance/sonic"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -114,7 +114,10 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 	// transactions[i], ethMsgs[i] and traceResults[i] are all produced by the
 	// same EthMsgsFromTendermintBlock flattening/filtering, so they align 1:1.
 	transactions, _ := block["transactions"].([]interface{})
-	ethMsgs := api.backend.EthMsgsFromTendermintBlock(resBlock, blockRes)
+	ethMsgs, err := api.backend.EthMsgsFromTendermintBlock(resBlock, blockRes)
+	if err != nil {
+		return nil, err
+	}
 	stateHeader := dtracer.BuildPilelineBlockHeader(block)
 	parentHeader, err := api.backend.HeaderByNumber(blockHeight - 1)
 	if err != nil {

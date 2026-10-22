@@ -10,7 +10,7 @@ import (
 	"github.com/holiman/uint256"
 
 	sdkmath "cosmossdk.io/math"
-	storetypes "cosmossdk.io/store/types"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
@@ -246,7 +246,7 @@ func (suite *HandlerTestSuite) TestDeployAndCallContract() {
 	//}
 
 	// Deploy contract - Owner.sol
-	gasLimit := uint64(100000000)
+	gasLimit := uint64(15000000)
 	gasPrice := big.NewInt(10000)
 
 	bytecode := common.FromHex("0x608060405234801561001057600080fd5b50336000806101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff1602179055506000809054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16600073ffffffffffffffffffffffffffffffffffffffff167f342827c97908e5e2f71151c08502a66d44b6f758e3ac2f1de95f02eb95f0a73560405160405180910390a36102c4806100dc6000396000f3fe608060405234801561001057600080fd5b5060043610610053576000357c010000000000000000000000000000000000000000000000000000000090048063893d20e814610058578063a6f9dae1146100a2575b600080fd5b6100606100e6565b604051808273ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff16815260200191505060405180910390f35b6100e4600480360360208110156100b857600080fd5b81019080803573ffffffffffffffffffffffffffffffffffffffff16906020019092919050505061010f565b005b60008060009054906101000a900473ffffffffffffffffffffffffffffffffffffffff16905090565b6000809054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff163373ffffffffffffffffffffffffffffffffffffffff16146101d1576040517f08c379a00000000000000000000000000000000000000000000000000000000081526004018080602001828103825260138152602001807f43616c6c6572206973206e6f74206f776e65720000000000000000000000000081525060200191505060405180910390fd5b8073ffffffffffffffffffffffffffffffffffffffff166000809054906101000a900473ffffffffffffffffffffffffffffffffffffffff1673ffffffffffffffffffffffffffffffffffffffff167f342827c97908e5e2f71151c08502a66d44b6f758e3ac2f1de95f02eb95f0a73560405160405180910390a3806000806101000a81548173ffffffffffffffffffffffffffffffffffffffff021916908373ffffffffffffffffffffffffffffffffffffffff1602179055505056fea265627a7a72315820f397f2733a89198bc7fed0764083694c5b828791f39ebcbc9e414bccef14b48064736f6c63430005100032")
@@ -258,7 +258,7 @@ func (suite *HandlerTestSuite) TestDeployAndCallContract() {
 	suite.Require().Equal(res.VmError, "", "failed to handle eth tx msg")
 
 	// store - changeOwner
-	gasLimit = uint64(100000000000)
+	gasLimit = uint64(15000000)
 	gasPrice = big.NewInt(100)
 	receiver := crypto.CreateAddress(suite.Address, 1)
 
@@ -395,18 +395,18 @@ func (suite *HandlerTestSuite) deployERC20Contract() common.Address {
 	ctorArgs, err := types.ERC20Contract.ABI.Pack("", suite.Address, big.NewInt(10000000000))
 	suite.Require().NoError(err)
 	msg := &core.Message{
-		From:             suite.Address,
-		To:               nil,
-		Nonce:            nonce,
-		Value:            big.NewInt(0),
-		GasLimit:         2000000,
-		GasPrice:         big.NewInt(1),
-		GasFeeCap:        nil,
-		GasTipCap:        nil,
-		Data:             append(types.ERC20Contract.Bin, ctorArgs...),
-		AccessList:       nil,
-		SkipNonceChecks:  true,
-		SkipFromEOACheck: true,
+		From:                  suite.Address,
+		To:                    nil,
+		Nonce:                 nonce,
+		Value:                 big.NewInt(0),
+		GasLimit:              2000000,
+		GasPrice:              big.NewInt(1),
+		GasFeeCap:             nil,
+		GasTipCap:             nil,
+		Data:                  append(types.ERC20Contract.Bin, ctorArgs...),
+		AccessList:            nil,
+		SkipNonceChecks:       true,
+		SkipTransactionChecks: true,
 	}
 	rsp, err := k.ApplyMessage(suite.Ctx, msg, nil, true)
 	suite.Require().NoError(err)
@@ -418,7 +418,10 @@ func (suite *HandlerTestSuite) deployERC20Contract() common.Address {
 // - when transaction reverted, gas refund works.
 // - when transaction reverted, nonce is still increased.
 func (suite *HandlerTestSuite) TestERC20TransferReverted() {
-	intrinsicGas := uint64(21572)
+	transferData, err := types.ERC20Contract.ABI.Pack("transfer", suite.Address, big.NewInt(10))
+	suite.Require().NoError(err)
+	floorDataGas, err := core.FloorDataGas(transferData)
+	suite.Require().NoError(err)
 	// test different hooks scenarios
 	testCases := []struct {
 		msg      string
@@ -428,13 +431,13 @@ func (suite *HandlerTestSuite) TestERC20TransferReverted() {
 	}{
 		{
 			"no hooks",
-			intrinsicGas, // enough for intrinsicGas, but not enough for execution
+			floorDataGas, // enough for floorDataGas, but not enough for execution
 			nil,
 			"out of gas",
 		},
 		{
 			"success hooks",
-			intrinsicGas, // enough for intrinsicGas, but not enough for execution
+			floorDataGas, // enough for floorDataGas, but not enough for execution
 			&DummyHook{},
 			"out of gas",
 		},
@@ -484,8 +487,8 @@ func (suite *HandlerTestSuite) TestERC20TransferReverted() {
 
 			rules := params.Rules{
 				IsHomestead: true,
-				IsIstanbul: true,
-				IsShanghai: true,
+				IsIstanbul:  true,
+				IsShanghai:  true,
 			}
 			fees, err := keeper.VerifyFee(tx, "aphoton", baseFee, rules, suite.Ctx.IsCheckTx())
 			suite.Require().NoError(err)
@@ -518,7 +521,11 @@ func (suite *HandlerTestSuite) TestERC20TransferReverted() {
 }
 
 func (suite *HandlerTestSuite) TestContractDeploymentRevert() {
-	intrinsicGas := uint64(134510)
+	ctorArgsForFloor, err := types.ERC20Contract.ABI.Pack("", suite.Address, big.NewInt(0))
+	suite.Require().NoError(err)
+	deployData := append(types.ERC20Contract.Bin, ctorArgsForFloor...)
+	floorDataGas, err := core.FloorDataGas(deployData)
+	suite.Require().NoError(err)
 	testCases := []struct {
 		msg      string
 		gasLimit uint64
@@ -526,12 +533,12 @@ func (suite *HandlerTestSuite) TestContractDeploymentRevert() {
 	}{
 		{
 			"no hooks",
-			intrinsicGas,
+			floorDataGas,
 			nil,
 		},
 		{
 			"success hooks",
-			intrinsicGas,
+			floorDataGas,
 			&DummyHook{},
 		},
 	}
@@ -574,6 +581,53 @@ func (suite *HandlerTestSuite) TestContractDeploymentRevert() {
 			suite.Require().Equal(nonce+1, nonce2)
 		})
 	}
+}
+
+func (suite *HandlerTestSuite) TestSelfDestructPostDestructionBalanceBurned() {
+	gasLimit := uint64(1_000_000)
+	childInitCode := common.FromHex("0x6009600c60003960096000f3361560075732ff5b00")
+	attackValue := big.NewInt(1_000_000_000)
+	factoryAddr := crypto.CreateAddress(suite.Address, 999)
+
+	var saltBytes [32]byte
+	saltBytes[31] = 0x01
+	salt := new(uint256.Int).SetBytes(saltBytes[:])
+
+	setupDB := suite.StateDB()
+	setupDB.CreateAccount(factoryAddr)
+	setupDB.CreateContract(factoryAddr)
+	setupDB.SetCode(factoryAddr, []byte{0x00}, 0)
+	suite.Require().NoError(setupDB.Commit())
+
+	fundingDB := suite.StateDB()
+	fundingDB.AddBalance(suite.Address, uint256.MustFromBig(attackValue), tracing.BalanceChangeTransfer)
+	suite.Require().NoError(fundingDB.Commit())
+
+	cfg1, err := suite.App.EvmKeeper.EVMConfig(suite.Ctx, suite.App.EvmKeeper.ChainID(), common.Hash{})
+	suite.Require().NoError(err)
+	msg1 := &core.Message{From: suite.Address, To: &factoryAddr, GasLimit: gasLimit, Value: big.NewInt(0), GasPrice: big.NewInt(0)}
+	stateDB1 := suite.StateDB()
+	evm1 := suite.App.EvmKeeper.NewEVM(suite.Ctx, msg1, cfg1, stateDB1)
+
+	_, childAddr, _, err := evm1.Create2(factoryAddr, childInitCode, gasLimit, uint256.NewInt(0), salt)
+	suite.Require().NoError(err)
+	suite.Require().Equal(crypto.CreateAddress2(factoryAddr, saltBytes, crypto.Keccak256(childInitCode)), childAddr)
+
+	_, _, err = evm1.Call(suite.Address, childAddr, []byte{0x01}, gasLimit, uint256.NewInt(0))
+	suite.Require().NoError(err)
+	suite.Require().Zero(stateDB1.GetBalance(childAddr).Sign())
+
+	_, _, err = evm1.Call(suite.Address, childAddr, nil, gasLimit, uint256.MustFromBig(attackValue))
+	suite.Require().NoError(err)
+	suite.Require().Zero(stateDB1.GetBalance(childAddr).Cmp(uint256.MustFromBig(attackValue)))
+	suite.Require().NoError(stateDB1.Commit())
+
+	// After commit: account metadata must be gone, and the balance must be burned by the fix.
+	suite.Require().Nil(suite.App.EvmKeeper.GetAccount(suite.Ctx, childAddr))
+
+	// The fix: balance should be zero after commit (burned), not attackValue
+	preservedBalance := suite.App.EvmKeeper.GetEVMDenomBalance(suite.Ctx, childAddr)
+	suite.Require().Zero(preservedBalance.Sign(), "post-selfdestruct balance must be burned at commit, not preserved")
 }
 
 // DummyHook implements EvmHooks interface

@@ -16,7 +16,13 @@
 package backend
 
 import (
+	"encoding/hex"
+	stderrors "errors"
+	"fmt"
+	"maps"
 	"math/big"
+	"slices"
+	"strings"
 
 	errorsmod "cosmossdk.io/errors"
 	sdkmath "cosmossdk.io/math"
@@ -86,7 +92,7 @@ func (b *Backend) GetProof(address common.Address, storageKeys []string, blockNr
 
 	for i, key := range storageKeys {
 		hexKey := common.HexToHash(key)
-		valueBz, proof, err := b.queryClient.GetProof(clientCtx, evmtypes.StoreKey, evmtypes.StateKey(address, hexKey.Bytes()))
+		valueBz, proof, err := b.queryClient.GetProof(clientCtx, evmtypes.StoreKey, evmtypes.StateKey(address, hexKey))
 		if err != nil {
 			return nil, err
 		}
@@ -138,18 +144,82 @@ func (b *Backend) GetStorageAt(address common.Address, key string, blockNrOrHash
 		return nil, err
 	}
 
-	req := &evmtypes.QueryStorageRequest{
-		Address: address.String(),
-		Key:     key,
+	return b.getStorageValue(address, key, blockNum.Int64())
+}
+
+// GetStorageValues returns the values of multiple storage slots for multiple accounts at the given block.
+func (b *Backend) GetStorageValues(
+	requests map[common.Address][]string, blockNrOrHash rpctypes.BlockNumberOrHash,
+) (map[common.Address][]hexutil.Bytes, error) {
+	if len(requests) == 0 {
+		return nil, &rpctypes.InvalidParamsError{Message: "empty request"}
 	}
 
-	res, err := b.queryClient.Storage(rpctypes.ContextWithHeight(blockNum.Int64()), req)
+	blockNum, err := b.BlockNumberFromTendermint(blockNrOrHash)
+	if err != nil {
+		return nil, err
+	}
+
+	height := blockNum.Int64()
+	values := make(map[common.Address][]hexutil.Bytes, len(requests))
+	addresses := slices.SortedFunc(maps.Keys(requests), common.Address.Cmp)
+	for _, address := range addresses {
+		keys := requests[address]
+		slotValues := make([]hexutil.Bytes, len(keys))
+		for i, key := range keys {
+			value, err := b.getStorageValue(address, key, height)
+			if err != nil {
+				return nil, err
+			}
+			slotValues[i] = value
+		}
+		values[address] = slotValues
+	}
+
+	return values, nil
+}
+
+// getStorageValue queries the storage value at the given address and key at the given block height.
+func (b *Backend) getStorageValue(address common.Address, key string, height int64) (hexutil.Bytes, error) {
+	storageKey, _, err := decodeStorageKey(key)
+	if err != nil {
+		return nil, &rpctypes.InvalidParamsError{
+			Message: fmt.Sprintf("%v: %q", err, key),
+		}
+	}
+
+	req := &evmtypes.QueryStorageRequest{
+		Address: address.String(),
+		Key:     storageKey.Hex(),
+	}
+
+	res, err := b.queryClient.Storage(rpctypes.ContextWithHeight(height), req)
 	if err != nil {
 		return nil, err
 	}
 
 	value := common.HexToHash(res.Value)
 	return value.Bytes(), nil
+}
+
+// decodeStorageKey parses a hex-encoded 32-byte hash.
+// For legacy compatibility reasons, we parse these keys leniently,
+// with the 0x prefix being optional.
+func decodeStorageKey(s string) (h common.Hash, inputLength int, err error) {
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		s = s[2:]
+	}
+	if (len(s) & 1) > 0 {
+		s = "0" + s
+	}
+	if len(s) > common.HashLength*2 {
+		return common.Hash{}, len(s) / 2, stderrors.New("storage key too long (want at most 32 bytes)")
+	}
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return common.Hash{}, 0, stderrors.New("invalid hex in storage key")
+	}
+	return common.BytesToHash(b), len(b), nil
 }
 
 // GetBalance returns the provided account's balance up to the provided block number.

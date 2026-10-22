@@ -16,9 +16,8 @@
 package keeper
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
-	"sort"
 
 	cmttypes "github.com/cometbft/cometbft/types"
 
@@ -56,7 +55,7 @@ func (k *Keeper) NewEVM(
 	blockCtx := vm.BlockContext{
 		CanTransfer: core.CanTransfer,
 		Transfer:    statedb.Transfer,
-		GetHash:     k.GetHashFn(ctx),
+		GetHash:     k.GetHashFn(ctx, cfg.Params.HeaderHashNum),
 		Coinbase:    cfg.CoinBase,
 		GasLimit:    ethermint.BlockGasLimit(ctx),
 		BlockNumber: cfg.BlockNumber,
@@ -73,21 +72,18 @@ func (k *Keeper) NewEVM(
 		cfg.Tracer = k.Tracer(ctx, *msg, cfg.ChainConfig)
 	}
 	vmConfig := k.VMConfig(ctx, cfg)
-	contracts := make(map[common.Address]vm.PrecompiledContract)
-	active := make([]common.Address, 0)
-	for addr, c := range vm.DefaultPrecompiles(cfg.Rules) {
-		contracts[addr] = c
-		active = append(active, addr)
+	// Start with cached default precompiles; add custom ones per-tx (they may depend on tx context).
+	contracts := cfg.DefaultPrecompiles
+	if len(k.customContractFns) > 0 {
+		contracts = make(map[common.Address]vm.PrecompiledContract, len(cfg.DefaultPrecompiles)+len(k.customContractFns))
+		for addr, c := range cfg.DefaultPrecompiles {
+			contracts[addr] = c
+		}
+		for _, fn := range k.customContractFns {
+			c := fn(ctx, cfg.Rules)
+			contracts[c.Address()] = c
+		}
 	}
-	for _, fn := range k.customContractFns {
-		c := fn(ctx, cfg.Rules)
-		addr := c.Address()
-		contracts[addr] = c
-		active = append(active, addr)
-	}
-	sort.SliceStable(active, func(i, j int) bool {
-		return bytes.Compare(active[i].Bytes(), active[j].Bytes()) < 0
-	})
 	evm := vm.NewEVM(blockCtx, stateDB, cfg.ChainConfig, vmConfig)
 	evm.SetTxContext(core.NewEVMTxContext(msg))
 	evm.SetPrecompiles(contracts)
@@ -98,7 +94,7 @@ func (k *Keeper) NewEVM(
 //  1. The requested height matches current block height from the context.
 //  2. The requested height is below current block height, follow EIP-2935.
 //  3. The requested height is above current block height, return empty
-func (k Keeper) GetHashFn(ctx sdk.Context) vm.GetHashFunc {
+func (k Keeper) GetHashFn(ctx sdk.Context, headerHashNum uint64) vm.GetHashFunc {
 	return func(num64 uint64) common.Hash {
 		h, err := ethermint.SafeInt64(num64)
 		if err != nil {
@@ -116,11 +112,10 @@ func (k Keeper) GetHashFn(ctx sdk.Context) vm.GetHashFunc {
 		}
 		// Align check with https://github.com/ethereum/go-ethereum/blob/release/1.11/core/vm/instructions.go#L433
 		var lower uint64
-		headerNum := k.GetParams(ctx).HeaderHashNum
-		if upper <= headerNum {
+		if upper <= headerHashNum {
 			lower = 0
 		} else {
-			lower = upper - headerNum
+			lower = upper - headerHashNum
 		}
 
 		if upper > num64 {
@@ -175,6 +170,8 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) 
 	msg := msgEth.AsMessage(cfg.BaseFee)
 	// snapshot to contain the tx processing and post processing in same scope
 	var commit func()
+	var commitDurableAuthorization func()
+	tmpCtxCommitted := false
 	tmpCtx := ctx
 	if k.hooks != nil {
 		// Create a cache context to revert state when tx hooks fails,
@@ -182,6 +179,15 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) 
 		// Didn't use `Snapshot` because the context stack has exponential complexity on certain operations,
 		// thus restricted to be used only inside `ApplyMessage`.
 		tmpCtx, commit = ctx.CacheContext()
+
+		// Keep the EIP-7702 authorization effects in a separate cache so they
+		// survive a later EVM/post-hook failure that discards tmpCtx. Only needed
+		// for txs that actually carry authorizations.
+		if len(msg.SetCodeAuthorizations) > 0 {
+			var durableAuthorizationCtx sdk.Context
+			durableAuthorizationCtx, commitDurableAuthorization = ctx.CacheContext()
+			cfg.DurableSetCodeAuthorizationCtx = &durableAuthorizationCtx
+		}
 	}
 
 	// pass true to commit the StateDB
@@ -233,6 +239,7 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) 
 		} else if commit != nil {
 			// PostTxProcessing is successful, commit the tmpCtx
 			commit()
+			tmpCtxCommitted = true
 			// Since the post-processing can alter the log, we need to update the result
 			res.Logs = types.NewLogsFromEth(receipt.Logs)
 		}
@@ -256,6 +263,10 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) 
 		return nil, errorsmod.Wrap(err, "failed to add transient gas used")
 	}
 
+	if commitDurableAuthorization != nil && !tmpCtxCommitted {
+		commitDurableAuthorization()
+	}
+
 	// reset the gas meter for current cosmos transaction
 	k.ResetGasMeterAndConsumeGas(ctx, totalGasUsed)
 
@@ -276,6 +287,23 @@ func (k *Keeper) ApplyMessage(ctx sdk.Context, msg *core.Message, tracer *tracin
 	}
 
 	return result, nil
+}
+
+// CheckMaxTxGas enforces the EIP-7825 per-tx gas cap for Osaka. Exported so the ante
+// handler can reuse it to reject oversized txs before they enter the mempool.
+func CheckMaxTxGas(gasLimit uint64, rules params.Rules) error {
+	if !rules.IsOsaka || gasLimit <= params.MaxTxGas {
+		return nil
+	}
+	return errorsmod.Wrapf(core.ErrGasLimitTooHigh, "cap: %d, tx: %d", params.MaxTxGas, gasLimit)
+}
+
+// preCheckMaxTxGas mirrors geth's own preCheck for EIP-7825; skipped for eth_call/eth_estimateGas.
+func preCheckMaxTxGas(msg *core.Message, rules params.Rules) error {
+	if msg.SkipTransactionChecks {
+		return nil
+	}
+	return CheckMaxTxGas(msg.GasLimit, rules)
 }
 
 // ApplyMessageWithConfig computes the new state by applying the given message against the existing state.
@@ -412,6 +440,12 @@ func (k *Keeper) ApplyMessageWithConfig(
 	}
 
 	rules := cfg.Rules
+
+	// Duplicated here since eth_call/FinalizeBlock bypass the ante handler.
+	if err := preCheckMaxTxGas(msg, rules); err != nil {
+		return nil, err
+	}
+
 	contractCreation := msg.To == nil
 	intrinsicGas, err := k.GetEthIntrinsicGas(msg, rules, contractCreation)
 	if err != nil {
@@ -429,6 +463,19 @@ func (k *Keeper) ApplyMessageWithConfig(
 		tracer.OnGasChange(msg.GasLimit, leftoverGas, tracing.GasChangeTxIntrinsicGas)
 	}
 
+	// Enforce EIP-7623 floor data gas for Prague in all execution contexts,
+	// including eth_call and FinalizeBlock paths that bypass the ante handler.
+	if rules.IsPrague {
+		floorDataGas, err := core.FloorDataGas(msg.Data)
+		if err != nil {
+			return nil, errorsmod.Wrap(err, "floor data gas")
+		}
+		if msg.GasLimit < floorDataGas {
+			return nil, errorsmod.Wrapf(core.ErrFloorDataGas,
+				"gas %d, minimum needed %d", msg.GasLimit, floorDataGas)
+		}
+	}
+
 	// access list preparation is moved from ante handler to here, because it's needed when `ApplyMessage` is called
 	// under contexts where ante handlers are not run, for example `eth_call` and `eth_estimateGas`.
 	// Check whether the init code size has been exceeded.
@@ -442,34 +489,54 @@ func (k *Keeper) ApplyMessageWithConfig(
 	stateDB.Prepare(rules, msg.From, cfg.CoinBase, msg.To, vm.ActivePrecompiles(rules), msg.AccessList)
 
 	if contractCreation {
-		// Take over nonce management from evm:
-		// - Reset sender's nonce to msg.Nonce so evm.Create() computes correct contract address
-		// - After evm.Create(), calculate the final nonce accounting for:
-		//   1. The ante handler's nonce increment (already in oldNonce)
-		//   2. Any additional nonce increments from nested CREATEs (e.g., via EIP-7702 callbacks)
-		//
-		// This is important for batch transactions where ante handler pre-increments
-		// nonces for all messages, and for EIP-7702 where constructor callbacks can
-		// trigger additional contract deployments.
 		oldNonce := stateDB.GetNonce(sender)
+		// take over the nonce management from evm:
+		// - reset sender's nonce to msg.Nonce() before calling evm.
+		// nonce is preincremented in antehandler, so we need to reset it here.
+		// this is to ensure the nonce is correct for the creation of the contract.
 		stateDB.SetNonce(sender, msg.Nonce, tracing.NonceChangeUnspecified)
 		ret, _, leftoverGas, vmErr = evm.Create(sender, msg.Data, leftoverGas, uint256.MustFromBig(msg.Value))
 		// evm.Create() increments nonce from msg.Nonce to (msg.Nonce + 1 + nestedCreates)
 		// We need: oldNonce + nestedCreates
 		afterCreateNonce := stateDB.GetNonce(sender)
 		nestedCreates := afterCreateNonce - msg.Nonce - 1
+		// setting nonce to the updated value is essential
+		// as there may be subsequent evm call messages which doesn't increase nonce
 		stateDB.SetNonce(sender, oldNonce+nestedCreates, tracing.NonceChangeUnspecified)
 	} else {
 		if msg.SetCodeAuthorizations != nil {
+			// Track validated authorizations together with the authority recovered
+			// during validation, so the durable replay below can reuse it.
+			type validAuth struct {
+				auth      ethtypes.SetCodeAuthorization
+				authority common.Address
+			}
+			var validAuths []validAuth
 			for _, auth := range msg.SetCodeAuthorizations {
 				// Note errors are ignored, we simply skip invalid authorizations here.
-				// Pass the EVM chain ID from cfg (set on every tx/query path) rather
-				// than letting validateAuthorization read the BeginBlock-only keeper
-				// field k.eip155ChainID, which is nil on a frozen/query-only node.
-				k.applyAuthorization(&auth, stateDB, cfg.ChainConfig.ChainID) //nolint:errcheck
+				authority, err := k.applyAuthorization(&auth, stateDB, cfg.ChainConfig.ChainID)
+				if err != nil {
+					k.Logger(ctx).Debug("failed to apply authorization", "error", err, "authorization", auth)
+					continue
+				}
+				validAuths = append(validAuths, validAuth{auth: auth, authority: authority})
+			}
+
+			if commit && cfg.DurableSetCodeAuthorizationCtx != nil && len(validAuths) > 0 {
+				durableStateDB := statedb.NewWithParams(*cfg.DurableSetCodeAuthorizationCtx, k, cfg.TxConfig, cfg.Params.EvmDenom)
+				for _, va := range validAuths {
+					// Replay the already-validated effects; this cannot fail, so it
+					// mirrors the main loop's skip-on-invalid behavior without ever
+					// turning an EVM-level outcome into a cosmos-level tx error.
+					k.applyDurableAuthorization(&va.auth, va.authority, durableStateDB)
+				}
+				if err := durableStateDB.Commit(); err != nil {
+					return nil, errorsmod.Wrap(err, "failed to commit durable EIP-7702 authorization stateDB")
+				}
 			}
 		}
-
+		// based on geth, nonce should be preincremented before evm call execution
+		// which is already done on the antehandler
 		ret, leftoverGas, vmErr = evm.Call(sender, *msg.To, msg.Data, leftoverGas, uint256.MustFromBig(msg.Value))
 	}
 
@@ -492,6 +559,24 @@ func (k *Keeper) ApplyMessageWithConfig(
 	if tracer != nil && tracer.OnGasChange != nil {
 		tracer.OnGasChange(leftoverGas-refund, leftoverGas, tracing.GasChangeTxRefunds)
 	}
+
+	// Apply EIP-7623 post-execution floor: enforce on post-refund gas used.
+	// leftoverGas already includes the refund at this point, so
+	// (msg.GasLimit - leftoverGas) is the post-refund gas used.
+	if rules.IsPrague {
+		floorDataGas, err := core.FloorDataGas(msg.Data)
+		if err != nil {
+			return nil, errorsmod.Wrap(err, "floor data gas")
+		}
+		if msg.GasLimit-leftoverGas < floorDataGas {
+			prev := leftoverGas
+			leftoverGas = msg.GasLimit - floorDataGas
+			if tracer != nil && tracer.OnGasChange != nil {
+				tracer.OnGasChange(prev, leftoverGas, tracing.GasChangeTxDataFloor)
+			}
+		}
+	}
+	temporaryGasUsed = msg.GasLimit - leftoverGas
 
 	// EVM execution error needs to be available for the JSON-RPC client
 	var vmError string
@@ -539,6 +624,24 @@ func (k *Keeper) ApplyMessageWithConfig(
 	// The dirty states in `StateDB` is either committed or discarded after return
 	if commit {
 		if err := stateDB.Commit(); err != nil {
+			// A state conflict between the outer EVM and a nested native action is an
+			// EVM-level failure: surface it as a VmError so the transaction is included
+			// in the block with status=0 rather than rejected at the cosmos message level.
+			// All other commit errors (infrastructure failures) remain cosmos-level errors.
+			//
+			// Note: estimateGas and eth_call do not hit this path because commit is
+			// false for simulations, so they will succeed even when a real execution
+			// would produce a state conflict.
+			if errors.Is(err, statedb.ErrStateConflict) {
+				return &types.EVMResult{
+					GasUsed:          gasUsed,
+					VmError:          statedb.ErrStateConflict.Error(),
+					Hash:             cfg.TxConfig.TxHash.Hex(),
+					BlockHash:        ctx.HeaderHash(),
+					ExecutionGasUsed: temporaryGasUsed,
+				}, nil
+			}
+
 			return nil, errorsmod.Wrap(err, "failed to commit stateDB")
 		}
 	}

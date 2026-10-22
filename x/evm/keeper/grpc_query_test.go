@@ -61,6 +61,7 @@ func (suite *GRPCServerTestSuiteSuite) SetupTest() {
 			evmGenesis.Params.ChainConfig.ShanghaiTime = &maxInt
 			evmGenesis.Params.ChainConfig.CancunTime = &maxInt
 			evmGenesis.Params.ChainConfig.PragueTime = &maxInt
+			evmGenesis.Params.ChainConfig.OsakaTime = &maxInt
 			genesis[types.ModuleName] = app.AppCodec().MustMarshalJSON(evmGenesis)
 		}
 		return genesis
@@ -231,10 +232,11 @@ func (suite *GRPCServerTestSuiteSuite) TestQueryCosmosAccount() {
 		{
 			"success",
 			func() {
+				acc := suite.App.AccountKeeper.GetAccount(suite.Ctx, suite.Address.Bytes())
 				expAccount = &types.QueryCosmosAccountResponse{
 					CosmosAddress: sdk.AccAddress(suite.Address.Bytes()).String(),
 					Sequence:      0,
-					AccountNumber: suite.App.AccountKeeper.NextAccountNumber(suite.Ctx) - 1,
+					AccountNumber: acc.GetAccountNumber(),
 				}
 				req = &types.QueryCosmosAccountRequest{
 					Address: suite.Address.String(),
@@ -247,7 +249,7 @@ func (suite *GRPCServerTestSuiteSuite) TestQueryCosmosAccount() {
 			func() {
 				acc := suite.App.AccountKeeper.GetAccount(suite.Ctx, suite.Address.Bytes())
 				suite.Require().NoError(acc.SetSequence(10))
-				num := suite.App.AccountKeeper.NextAccountNumber(suite.Ctx)
+				num := suite.App.AccountKeeper.NextAccountNumber(suite.Ctx, acc)
 				suite.Require().NoError(acc.SetAccountNumber(num))
 				suite.App.AccountKeeper.SetAccount(suite.Ctx, acc)
 				expAccount = &types.QueryCosmosAccountResponse{
@@ -418,7 +420,7 @@ func (suite *GRPCServerTestSuiteSuite) TestQueryCode() {
 			"success",
 			func(vmdb vm.StateDB) {
 				expCode = []byte("code")
-				vmdb.SetCode(suite.Address, expCode)
+				vmdb.SetCode(suite.Address, expCode, 0)
 
 				req = &types.QueryCodeRequest{
 					Address: suite.Address.String(),
@@ -535,10 +537,11 @@ func (suite *GRPCServerTestSuiteSuite) TestQueryValidatorAccount() {
 		{
 			"success",
 			func() {
+				acc := suite.App.AccountKeeper.GetAccount(suite.Ctx, suite.Address.Bytes())
 				expAccount = &types.QueryValidatorAccountResponse{
 					AccountAddress: sdk.AccAddress(suite.Address.Bytes()).String(),
 					Sequence:       0,
-					AccountNumber:  suite.App.AccountKeeper.NextAccountNumber(suite.Ctx) - 1,
+					AccountNumber:  acc.GetAccountNumber(),
 				}
 				req = &types.QueryValidatorAccountRequest{
 					ConsAddress: suite.ConsAddress.String(),
@@ -551,7 +554,7 @@ func (suite *GRPCServerTestSuiteSuite) TestQueryValidatorAccount() {
 			func() {
 				acc := suite.App.AccountKeeper.GetAccount(suite.Ctx, suite.Address.Bytes())
 				suite.Require().NoError(acc.SetSequence(10))
-				num := suite.App.AccountKeeper.NextAccountNumber(suite.Ctx)
+				num := suite.App.AccountKeeper.NextAccountNumber(suite.Ctx, acc)
 				suite.Require().NoError(acc.SetAccountNumber(num))
 				suite.App.AccountKeeper.SetAccount(suite.Ctx, acc)
 				expAccount = &types.QueryValidatorAccountResponse{
@@ -1160,7 +1163,7 @@ func (suite *GRPCServerTestSuiteSuite) TestTraceBlock() {
 				traceConfig = nil
 			},
 			expPass:       true,
-			traceResponse: `[{"result":{"gas":34828,"failed":false,"returnValue":"0x0000000000000000000000000000000000000000000000000000000000000001","structLogs":[{"pc":0,"op":"`,
+			traceResponse: `[{"txHash":"%s","result":{"gas":34828,"failed":false,"returnValue":"0x0000000000000000000000000000000000000000000000000000000000000001","structLogs":[{"pc":0,"op":"`,
 		},
 		{
 			msg: "filtered trace",
@@ -1172,7 +1175,7 @@ func (suite *GRPCServerTestSuiteSuite) TestTraceBlock() {
 				}
 			},
 			expPass:       true,
-			traceResponse: `[{"result":{"gas":34828,"failed":false,"returnValue":"0x0000000000000000000000000000000000000000000000000000000000000001","structLogs":[{"pc":0,"op":"`,
+			traceResponse: `[{"txHash":"%s","result":{"gas":34828,"failed":false,"returnValue":"0x0000000000000000000000000000000000000000000000000000000000000001","structLogs":[{"pc":0,"op":"`,
 		},
 		{
 			msg: "javascript tracer",
@@ -1182,7 +1185,7 @@ func (suite *GRPCServerTestSuiteSuite) TestTraceBlock() {
 				}
 			},
 			expPass:       true,
-			traceResponse: "[{\"result\":[]}]",
+			traceResponse: `[{"txHash":"%s","result":[]}]`,
 		},
 		{
 			msg: "default trace with enableFeemarket and filtered return",
@@ -1194,7 +1197,7 @@ func (suite *GRPCServerTestSuiteSuite) TestTraceBlock() {
 				}
 			},
 			expPass:         true,
-			traceResponse:   `[{"result":{"gas":34828,"failed":false,"returnValue":"0x0000000000000000000000000000000000000000000000000000000000000001","structLogs":[{"pc":0,"op":"`,
+			traceResponse:   `[{"txHash":"%s","result":{"gas":34828,"failed":false,"returnValue":"0x0000000000000000000000000000000000000000000000000000000000000001","structLogs":[{"pc":0,"op":"`,
 			enableFeemarket: true,
 		},
 		{
@@ -1205,7 +1208,7 @@ func (suite *GRPCServerTestSuiteSuite) TestTraceBlock() {
 				}
 			},
 			expPass:         true,
-			traceResponse:   `[{"result":[]}]`,
+			traceResponse:   `[{"txHash":"%s","result":[]}]`,
 			enableFeemarket: true,
 		},
 		{
@@ -1227,7 +1230,7 @@ func (suite *GRPCServerTestSuiteSuite) TestTraceBlock() {
 				txs = append([]*types.MsgEthereumTx{}, firstTx, secondTx)
 			},
 			expPass:         true,
-			traceResponse:   `[{"result":{"gas":34828,"failed":false,"returnValue":"0x0000000000000000000000000000000000000000000000000000000000000001","structLogs":[{"pc":0,"op":"`,
+			traceResponse:   `[{"txHash":"%s","result":{"gas":34828,"failed":false,"returnValue":"0x0000000000000000000000000000000000000000000000000000000000000001","structLogs":[{"pc":0,"op":"`,
 			enableFeemarket: false,
 		},
 		{
@@ -1253,7 +1256,7 @@ func (suite *GRPCServerTestSuiteSuite) TestTraceBlock() {
 				}
 			},
 			expPass:       true,
-			traceResponse: "invalid_tracer is not defined",
+			traceResponse: `[{"txHash":"%s","error":"rpc error: code = Internal desc = ReferenceError: invalid_tracer is not defined`,
 		},
 		{
 			msg: "invalid chain id",
@@ -1263,7 +1266,7 @@ func (suite *GRPCServerTestSuiteSuite) TestTraceBlock() {
 				chainID = &tmp
 			},
 			expPass:       true,
-			traceResponse: "invalid chain id for signer",
+			traceResponse: `[{"txHash":"%s","error":"rpc error: code = Internal desc = invalid chain id for signer`,
 		},
 	}
 
@@ -1295,9 +1298,10 @@ func (suite *GRPCServerTestSuiteSuite) TestTraceBlock() {
 			res, err := suite.EvmQueryClient.TraceBlock(suite.Ctx, &traceReq)
 			if tc.expPass {
 				suite.Require().NoError(err)
+				tc.traceResponse = fmt.Sprintf(tc.traceResponse, txs[0].AsTransaction().Hash().Hex())
 				// if data is to big, slice the result
 				if len(res.Data) > 150 {
-					suite.Require().Equal(tc.traceResponse, string(res.Data[:150]))
+					suite.Require().Equal(tc.traceResponse[:150], string(res.Data[:150]))
 				} else {
 					suite.Require().Contains(string(res.Data), tc.traceResponse)
 				}
@@ -2746,4 +2750,126 @@ func (suite *GRPCServerTestSuiteSuite) TestSimulator_SimulationMode_BalanceNotCh
 	suite.Require().NoError(json.Unmarshal(results[0]["calls"], &calls))
 	suite.Require().Len(calls, 1)
 	suite.Require().Equal(`"0x1"`, string(calls[0]["status"]))
+}
+
+func (suite *GRPCServerTestSuiteSuite) TestCreateAccessList() {
+	address := tests.GenerateAddress()
+	supply := sdkmath.NewIntWithDecimal(1000, 18).BigInt()
+
+	ctorArgs, err := types.ERC20Contract.ABI.Pack("", address, supply)
+	suite.Require().NoError(err)
+	data := append(types.ERC20Contract.Bin, ctorArgs...)
+
+	testCases := []struct {
+		name     string
+		req      *types.EthCallRequest
+		expPass  bool
+		expError string
+	}{
+		{
+			"nil request",
+			nil,
+			false,
+			"",
+		},
+		{
+			"invalid args",
+			&types.EthCallRequest{Args: []byte("invalid"), GasCap: uint64(config.DefaultGasCap)},
+			false,
+			"",
+		},
+		{
+			"pass - contract deployment with GasUsed populated",
+			&types.EthCallRequest{
+				Args: func() []byte {
+					gas := hexutil.Uint64(config.DefaultGasCap)
+					args, _ := json.Marshal(&types.TransactionArgs{
+						From: &address,
+						Data: (*hexutil.Bytes)(&data),
+						Gas:  &gas,
+					})
+					return args
+				}(),
+				GasCap: uint64(config.DefaultGasCap),
+			},
+			true,
+			"",
+		},
+	}
+
+	for _, tc := range testCases {
+		suite.Run(tc.name, func() {
+			suite.SetupTest()
+			res, err := suite.App.EvmKeeper.CreateAccessList(suite.Ctx, tc.req)
+			if tc.expPass {
+				suite.Require().NoError(err)
+				suite.Require().NotNil(res)
+				var result types.AccessListResult
+				suite.Require().NoError(json.Unmarshal(res.Data, &result))
+				suite.Require().NotZero(uint64(result.GasUsed))
+				suite.Require().Equal(tc.expError, result.Error)
+			} else {
+				suite.Require().Error(err)
+			}
+		})
+	}
+}
+
+func (suite *GRPCServerTestSuiteSuite) TestCreateAccessListWithoutGas() {
+	suite.App.EvmKeeper.SetBalance(suite.Ctx, suite.Address, *uint256.NewInt(1000000000000000000), types.DefaultEVMDenom)
+
+	to := tests.GenerateAddress()
+	value := (*hexutil.Big)(big.NewInt(10))
+	args, err := json.Marshal(&types.TransactionArgs{
+		From:  &suite.Address,
+		To:    &to,
+		Value: value,
+	})
+	suite.Require().NoError(err)
+
+	res, err := suite.App.EvmKeeper.CreateAccessList(suite.Ctx, &types.EthCallRequest{
+		Args:   args,
+		GasCap: uint64(config.DefaultGasCap),
+	})
+	suite.Require().NoError(err)
+	suite.Require().NotNil(res)
+
+	var result types.AccessListResult
+	suite.Require().NoError(json.Unmarshal(res.Data, &result))
+	suite.Require().Empty(result.AccessList)
+	suite.Require().NotZero(uint64(result.GasUsed))
+	suite.Require().Empty(result.Error)
+}
+
+func (suite *GRPCServerTestSuiteSuite) TestCreateAccessList_VmError() {
+	contractAddr := suite.deployTestContract(suite.Address)
+	suite.Commit(suite.T())
+
+	// Call transfer from an address that holds no tokens — triggers ERC20 revert.
+	caller := tests.GenerateAddress()
+	recipient := tests.GenerateAddress()
+	transferData, err := types.ERC20Contract.ABI.Pack("transfer", recipient, big.NewInt(1))
+	suite.Require().NoError(err)
+
+	gas := hexutil.Uint64(config.DefaultGasCap)
+	args, err := json.Marshal(&types.TransactionArgs{
+		From: &caller,
+		To:   &contractAddr,
+		Data: (*hexutil.Bytes)(&transferData),
+		Gas:  &gas,
+	})
+	suite.Require().NoError(err)
+
+	res, err := suite.App.EvmKeeper.CreateAccessList(suite.Ctx, &types.EthCallRequest{
+		Args:   args,
+		GasCap: uint64(config.DefaultGasCap),
+	})
+	suite.Require().NoError(err)
+	suite.Require().NotNil(res)
+
+	var result types.AccessListResult
+	suite.Require().NoError(json.Unmarshal(res.Data, &result))
+	suite.Require().NotEmpty(result.Error)
+	suite.Require().NotZero(uint64(result.GasUsed))
+	suite.Require().NotEmpty(result.AccessList)
 }

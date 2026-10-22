@@ -31,7 +31,7 @@ import (
 )
 
 var (
-	protoCodec codec.ProtoCodecMarshaler
+	protoCodec codec.Codec
 	aminoCodec *codec.LegacyAmino
 )
 
@@ -101,6 +101,10 @@ func decodeAminoSignDoc(signDocBytes []byte) (apitypes.TypedData, error) {
 		return apitypes.TypedData{}, err
 	}
 
+	if fees.Granter != "" {
+		return apitypes.TypedData{}, errors.New("EIP-712 signing does not commit fee granter, so it must be empty")
+	}
+
 	// Validate payload messages
 	msgs := make([]sdk.Msg, len(aminoDoc.Msgs))
 	for i, jsonMsg := range aminoDoc.Msgs {
@@ -113,6 +117,10 @@ func decodeAminoSignDoc(signDocBytes []byte) (apitypes.TypedData, error) {
 
 	if err := validatePayloadMessages(msgs); err != nil {
 		return apitypes.TypedData{}, err
+	}
+
+	if aminoDoc.TimeoutHeight != 0 {
+		return apitypes.TypedData{}, errors.New("EIP-712 signing does not commit timeout_height, so it must be 0")
 	}
 
 	chainID, err := types.ParseChainID(aminoDoc.ChainID)
@@ -154,13 +162,22 @@ func decodeProtobufSignDoc(signDocBytes []byte) (apitypes.TypedData, error) {
 		return apitypes.TypedData{}, err
 	}
 
-	// Until support for these fields is added, throw an error at their presence
-	if body.TimeoutHeight != 0 || len(body.ExtensionOptions) != 0 || len(body.NonCriticalExtensionOptions) != 0 {
-		return apitypes.TypedData{}, errors.New("body contains unsupported fields: TimeoutHeight, ExtensionOptions, or NonCriticalExtensionOptions")
+	// Until support for these fields is added, throw an error at their presence.
+	if body.TimeoutHeight != 0 ||
+		body.GetTimeoutTimestamp() != nil ||
+		len(body.ExtensionOptions) != 0 ||
+		len(body.NonCriticalExtensionOptions) != 0 {
+		return apitypes.TypedData{}, errors.New(
+			"body contains unsupported fields: TimeoutHeight, TimeoutTimestamp, ExtensionOptions, or NonCriticalExtensionOptions",
+		)
 	}
 
 	if len(authInfo.SignerInfos) != 1 {
 		return apitypes.TypedData{}, fmt.Errorf("invalid number of signer infos provided, expected 1 got %v", len(authInfo.SignerInfos))
+	}
+
+	if authInfo.Fee.Granter != "" {
+		return apitypes.TypedData{}, errors.New("EIP-712 signing does not commit fee granter, so it must be empty")
 	}
 
 	// Validate payload messages
@@ -190,7 +207,7 @@ func decodeProtobufSignDoc(signDocBytes []byte) (apitypes.TypedData, error) {
 	}
 
 	// WrapTxToTypedData expects the payload as an Amino Sign Doc
-	signBytes := legacytx.StdSignBytes(
+	signBytes := legacytx.StdSignBytes( //nolint:staticcheck
 		signDoc.ChainId,
 		signDoc.AccountNumber,
 		signerInfo.Sequence,

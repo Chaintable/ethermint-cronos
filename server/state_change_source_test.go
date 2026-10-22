@@ -4,12 +4,12 @@ import (
 	"sync"
 	"testing"
 
-	"cosmossdk.io/log"
-	iavlstore "cosmossdk.io/store/iavl"
-	storetypes "cosmossdk.io/store/types"
-	"cosmossdk.io/store/wrapper"
+	"cosmossdk.io/log/v2"
 	dbm "github.com/cosmos/cosmos-db"
 	servertypes "github.com/cosmos/cosmos-sdk/server/types"
+	iavlstore "github.com/cosmos/cosmos-sdk/store/v2/iavl"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
+	"github.com/cosmos/cosmos-sdk/store/v2/wrapper"
 	"github.com/cosmos/iavl"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +33,7 @@ func (c namedTestCMS) LatestVersion() int64 { return 2 }
 func (c namedTestCMS) StoreKeysByName() map[string]storetypes.StoreKey {
 	return c.keys
 }
-func (c namedTestCMS) GetCommitKVStore(key storetypes.StoreKey) storetypes.CommitKVStore {
+func (c namedTestCMS) GetStore(key storetypes.StoreKey) storetypes.Store {
 	return c.stores[key.Name()]
 }
 

@@ -24,7 +24,7 @@ import (
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/evmos/ethermint/rpc/types"
 
-	"cosmossdk.io/log"
+	"cosmossdk.io/log/v2"
 	tmrpctypes "github.com/cometbft/cometbft/rpc/core/types"
 	"github.com/pkg/errors"
 
@@ -63,7 +63,7 @@ func NewRangeFilter(logger log.Logger, backend Backend, begin, end int64, addres
 	// Flatten the address and topic filter clauses into a single bloombits filter
 	// system. Since the bloombits are not positional, nil topics are permitted,
 	// which get flattened into a nil byte slice.
-	var filtersBz [][][]byte //nolint: prealloc
+	filtersBz := make([][][]byte, 0, 1+len(topics))
 	if len(addresses) > 0 {
 		filter := make([][]byte, len(addresses))
 		for i, address := range addresses {
@@ -104,17 +104,20 @@ func newFilter(logger log.Logger, backend Backend, criteria filters.FilterCriter
 // Logs searches the blockchain for matching log entries, returning all from the
 // first block that contains matches, updating the start of the filter accordingly.
 func (f *Filter) Logs(_ context.Context, logLimit int, blockLimit int64) ([]*ethtypes.Log, error) {
-	// If we're doing singleton block filtering, execute and return
-	if f.criteria.BlockHash != nil && *f.criteria.BlockHash != (common.Hash{}) {
+	// In case the blockhash is set, we fetch the block and return the logs.
+	if f.criteria.BlockHash != nil {
 		resBlock, err := f.backend.TendermintBlockByHash(*f.criteria.BlockHash)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch header by hash %s: %w", f.criteria.BlockHash, err)
+		}
+		if resBlock == nil {
+			return nil, errors.New("unknown block")
 		}
 
 		blockRes, err := f.backend.TendermintBlockResultByNumber(&resBlock.Block.Height)
 		if err != nil {
 			f.logger.Debug("failed to fetch block result from Tendermint", "height", resBlock.Block.Height, "error", err.Error())
-			return nil, nil
+			return nil, errors.Wrapf(err, "failed to fetch block result for height %d", resBlock.Block.Height)
 		}
 
 		bloom, err := f.backend.BlockBloom(blockRes)
@@ -122,7 +125,15 @@ func (f *Filter) Logs(_ context.Context, logLimit int, blockLimit int64) ([]*eth
 			return nil, err
 		}
 
-		return f.blockLogs(blockRes, bloom)
+		logs, err := f.blockLogs(blockRes, bloom)
+		if err != nil || len(logs) == 0 {
+			return logs, err
+		}
+		blockHash := *f.criteria.BlockHash
+		for _, l := range logs {
+			l.BlockHash = blockHash
+		}
+		return logs, nil
 	}
 
 	// Figure out the limits of the filter range
@@ -137,6 +148,13 @@ func (f *Filter) Logs(_ context.Context, logLimit int, blockLimit int64) ([]*eth
 	}
 
 	head := header.Number.Int64()
+	// The range path assumes non-nil bounds.
+	if f.criteria.FromBlock == nil {
+		f.criteria.FromBlock = big.NewInt(head)
+	}
+	if f.criteria.ToBlock == nil {
+		f.criteria.ToBlock = big.NewInt(head)
+	}
 	if f.criteria.FromBlock.Int64() < 0 {
 		f.criteria.FromBlock = big.NewInt(head)
 	} else if f.criteria.FromBlock.Int64() == 0 {
@@ -169,7 +187,7 @@ func (f *Filter) Logs(_ context.Context, logLimit int, blockLimit int64) ([]*eth
 		blockRes, err := f.backend.TendermintBlockResultByNumber(&height)
 		if err != nil {
 			f.logger.Debug("failed to fetch block result from Tendermint", "height", height, "error", err.Error())
-			return logs, nil
+			return logs, errors.Wrapf(err, "failed to fetch block result for height %d", height)
 		}
 
 		bloom, err := f.backend.BlockBloom(blockRes)
@@ -236,7 +254,7 @@ func createBloomFilters(filters [][][]byte, logger log.Logger) [][]BloomIV {
 			iv, err := calcBloomIVs(clause)
 			if err != nil {
 				bloomIVs = nil
-				logger.Error("calcBloomIVs error: %v", err)
+				logger.Error("calcBloomIVs error", "error", err)
 				break
 			}
 

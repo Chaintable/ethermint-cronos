@@ -14,13 +14,13 @@ import (
 
 func BuildPipelineBlock(rawBlock map[string]interface{}) dtypes.Block {
 	block := dtypes.Block{
-		ID:                    rawBlock["hash"].(hexutil.Bytes).String(),
-		Height:                new(big.Int).SetUint64(uint64(rawBlock["number"].(hexutil.Uint64))),
+		ID:                    rawBlock["hash"].(common.Hash).Hex(),
+		Height:                new(big.Int).Set((*big.Int)(rawBlock["number"].(*hexutil.Big))),
 		ParentID:              rawBlock["parentHash"].(common.Hash).Hex(),
 		BaseFeePerGas:         big.NewInt(0),
 		Miner:                 strings.ToLower(rawBlock["miner"].(common.Address).Hex()),
 		GasLimit:              new(big.Int).SetUint64(uint64(rawBlock["gasLimit"].(hexutil.Uint64))),
-		GasUsed:               (*big.Int)(rawBlock["gasUsed"].(*hexutil.Big)),
+		GasUsed:               new(big.Int).SetUint64(uint64(rawBlock["gasUsed"].(hexutil.Uint64))),
 		Timestamp:             uint64(rawBlock["timestamp"].(hexutil.Uint64)),
 		ProcessStartTimestamp: time.Now().UnixMilli(),
 	}
@@ -71,19 +71,19 @@ func BuildPipelineTransaction(
 
 func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
 	blockHeader := dtypes.Header{
-		Number:           (*hexutil.Big)(new(big.Int).SetUint64(uint64(header["number"].(hexutil.Uint64)))),
-		Hash:             common.BytesToHash(header["hash"].(hexutil.Bytes)),
+		Number:           header["number"].(*hexutil.Big),
+		Hash:             header["hash"].(common.Hash),
 		ParentHash:       header["parentHash"].(common.Hash),
 		Nonce:            header["nonce"].(ethtypes.BlockNonce),
 		MixHash:          header["mixHash"].(common.Hash),
 		Sha3Uncles:       header["sha3Uncles"].(common.Hash),
 		LogsBloom:        header["logsBloom"].(ethtypes.Bloom),
-		StateRoot:        common.BytesToHash(header["stateRoot"].(hexutil.Bytes)),
+		StateRoot:        header["stateRoot"].(common.Hash),
 		Miner:            header["miner"].(common.Address),
 		Difficulty:       header["difficulty"].(*hexutil.Big),
 		ExtraData:        hexutil.Bytes{},
 		GasLimit:         header["gasLimit"].(hexutil.Uint64),
-		GasUsed:          hexutil.Uint64((*big.Int)(header["gasUsed"].(*hexutil.Big)).Uint64()),
+		GasUsed:          header["gasUsed"].(hexutil.Uint64),
 		Timestamp:        header["timestamp"].(hexutil.Uint64),
 		TransactionsRoot: header["transactionsRoot"].(common.Hash),
 		ReceiptsRoot:     header["receiptsRoot"].(common.Hash),

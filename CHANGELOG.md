@@ -37,6 +37,9 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ## Unreleased
 
+* (debank) Support Cronos v1.8 with the committed IAVL state-diff emitter,
+  consensus-guided traces, ErrTrace classification, and serialized live state reads.
+
 * (debank) [Chaintable#15](https://github.com/Chaintable/ethermint-cronos/pull/15) serialize live IAVL state-diff reads with block execution.
 * (evm) [#997](https://github.com/crypto-org-chain/ethermint/pull/997) fix(evm): add optional `traceReplay` trace-config flag to skip gas deduction during tracing and bypass a legacy bug.
 * (server) [#938](https://github.com/crypto-org-chain/ethermint/pull/938) feat(server): add `index-eth-tx range <start> <end>` subcommand for targeted block re-indexing.
@@ -48,6 +51,101 @@ Ref: https://keepachangelog.com/en/1.0.0/
 * (rpc) [#869](https://github.com/crypto-org-chain/ethermint/pull/869) feat(RPC): implement `eth_simulateV1` RPC
 * (server) [#985](https://github.com/crypto-org-chain/ethermint/pull/985) feat(server): make JSON-RPC batch limits configurable.
 * (evm) [#986](https://github.com/crypto-org-chain/ethermint/pull/986) fix(evm): align debug_trace fee with virtual ante path
+### API Breaking
+
+* (rpc) [#1091](https://github.com/crypto-org-chain/ethermint/pull/1091) fix(rpc): return `net_peerCount` as a hex quantity (`hexutil.Uint`) instead of a JSON number.
+* (rpc) [#962](https://github.com/crypto-org-chain/ethermint/pull/962) fix(rpc): rename `AccessListResult.Accesslist` to `AccessList` and change `GasUsed` from `uint64` to `hexutil.Uint64` in `x/evm/types`; change `AccessList` and `GasUsed` from pointer to value types in `rpc/types.AccessListResult`.
+
+### Improvements
+
+* (rpc) [#1010](https://github.com/crypto-org-chain/ethermint/pull/1010) test(rpc): validate JSON-RPC schema against ethereum/execution-apis fixtures.
+* (rpc) [#992](https://github.com/crypto-org-chain/ethermint/pull/992) test(rpc): improve test coverage for GetTransactionByBlock* methods.
+* (rpc) [#996](https://github.com/crypto-org-chain/ethermint/pull/996) refactor(rpc): fix type consistency in `buildReceiptDirect` and `GetTransactionByBlockHashAndIndex`.
+
+### Bug Fixes
+
+* (eip712) [#1107](https://github.com/crypto-org-chain/ethermint/pull/1107) fix(eip712): reject nonempty fee granter on EIP-712 signing paths.
+* (test) [#1100](https://github.com/crypto-org-chain/ethermint/pull/1100) test(rpc): pin the `ethereum/execution-apis` ref used by the JSON-RPC schema suite and cover the `eth_getLogs` future-`fromBlock` and `testing_commitBlockV1` spec cases added upstream.
+* (server) [#1099](https://github.com/crypto-org-chain/ethermint/pull/1099) fix(server): initialize OpenTelemetry.
+* (eip712) [#1074](https://github.com/crypto-org-chain/ethermint/pull/1074) fix(eip712): reject nonzero timeout_height on EIP-712 signing paths.
+* (rpc) [#1063](https://github.com/crypto-org-chain/ethermint/pull/1063) fix(rpc): exclude preceding Cosmos transaction gas from Ethereum receipt `cumulativeGasUsed`.
+* (evm) [#1056](https://github.com/crypto-org-chain/ethermint/pull/1056) enforce EIP-7825 per-transaction gas limit cap (`MaxTxGas`) once Osaka activates.
+* (deps) [#1043](https://github.com/crypto-org-chain/ethermint/pull/1043) ffix(deps): bump Go to 1.25.11 to resolve stdlib vulnerabilities
+* (server) [#1045](https://github.com/crypto-org-chain/ethermint/pull/1045) fix(server): fix JSON-RPC goroutine leak and surface WS startup errors.
+* (rpc) [#1041](https://github.com/crypto-org-chain/ethermint/pull/1041) fix(rpc): enforce a per-connection cap on WebSocket `eth_subscribe` subscriptions.
+* (rpc) [#1040](https://github.com/crypto-org-chain/ethermint/pull/1040) fix(rpc): cap `eth_feeHistory` `rewardPercentiles` length to bound reward-matrix allocation.
+* (rpc) [#1039](https://github.com/crypto-org-chain/ethermint/pull/1039) fix(rpc): prevent nil-pointer panic in `eth_getLogs`/`eth_getFilterLogs` when a zero block hash is supplied.
+* (server) [#1038](https://github.com/crypto-org-chain/ethermint/pull/1038) fix(server): support tls config on the JSON-RPC HTTP server.
+* (evm) [#1029](https://github.com/crypto-org-chain/ethermint/pull/1029) fix(evm): allow access list creation without requiring gas when no authorization list is provided.
+* (rpc) [#1030](https://github.com/crypto-org-chain/ethermint/pull/1030) fix(rpc): align eth_getStorageAt storage key parsing.
+* (evm) [#1023](https://github.com/crypto-org-chain/ethermint/pull/1023) fix(evm): skip rewriting eip155ChainID when unchanged.
+* (rpc) [#1025](https://github.com/crypto-org-chain/ethermint/pull/1025) fix(rpc): propagate block-result fetch errors in `eth_getLogs` instead of returning partial logs as success.
+* (rpc) [#1006](https://github.com/crypto-org-chain/ethermint/pull/1006) fix(rpc): disable CORS by default on the HTTP JSON-RPC server.
+* (rpc) [#1024](https://github.com/crypto-org-chain/ethermint/pull/1024) fix(rpc): fix goroutine leak, race, and nil panic in eth_feeHistory.
+* (evm) [#1020](https://github.com/crypto-org-chain/ethermint/pull/1020) fix(evm): guard SetCodeTx auth list against empty V.
+* (ante) [#1009](https://github.com/crypto-org-chain/ethermint/pull/1009) fix(ante): reject EIP-712 fallback signatures for transactions whose `TxBody` sets `timeout_timestamp`.
+* (evm) [#1007](https://github.com/crypto-org-chain/ethermint/pull/1007) fix(evm): add optional `traceReplay` trace-config flag to skip gas deduction during tracing and bypass a legacy bug.
+* (rpc) [#975](https://github.com/crypto-org-chain/ethermint/pull/975) fix(rpc): correct EVM `transactionsRoot` in `HeaderByNumber`, `HeaderByHash` and `newHeads`.
+* (debug) [#990](https://github.com/crypto-org-chain/ethermint/pull/990) fix(debug): apply restrict-user-input path check to all file-write methods.
+* (rpc) [#971](https://github.com/crypto-org-chain/ethermint/pull/971) fix(rpc): align eth_getBlockByHash response with execution-apis spec.
+* (rpc) [#979](https://github.com/crypto-org-chain/ethermint/pull/979) fix(rpc): add `blockTimestamp` to transaction RPC responses — fixes `eth_getTransactionByBlockHash/NumberAndIndex`, `eth_getTransactionByHash`, and `eth_getBlockByHash/Number` (fullTx).
+* (rpc) [#978](https://github.com/crypto-org-chain/ethermint/pull/978) fix(rpc): align `eth_sendRawTransaction` with execution-apis.
+* (rpc) [#970](https://github.com/crypto-org-chain/ethermint/pull/970) fix(rpc): prevent nil panic in SignClient type assertion and guard nil ResultHeader in block hash lookups.
+* (rpc) [#969](https://github.com/crypto-org-chain/ethermint/pull/969) fix(rpc): align eth_getLogs response with execution-apis spec.
+* (rpc) [#963](https://github.com/crypto-org-chain/ethermint/pull/963) fix(rpc): align eth_feeHistory response with execution-apis spec.
+* (rpc) [#962](https://github.com/crypto-org-chain/ethermint/pull/962) fix(rpc): align eth_createAccessList response with execution-apis spec — hex-encode gasUsed and propagate VM errors in the Error field.
+* (test) [#972](https://github.com/crypto-org-chain/ethermint/pull/972) test(integration): fix flaky test_tracecall_diff by replacing derive_random_account with fixed unique indices.
+* (evm) [#1090](https://github.com/crypto-org-chain/ethermint/pull/1090) fix(evm): prevent panic in EthSignerExtractionAdapter
+
+### Features
+
+* (ante) [#1062](https://github.com/crypto-org-chain/ethermint/pull/1062) feat(ante): add hash-keyed sender cache to VerifyEthSig
+* (rpc) [#1048](https://github.com/crypto-org-chain/ethermint/pull/1048) feat(rpc): add `debug_getRawTransaction`
+* (rpc) [#1046](https://github.com/crypto-org-chain/ethermint/pull/1046) feat(rpc): add `debug_getRawBlock`
+* (rpc) [#1047](https://github.com/crypto-org-chain/ethermint/pull/1047) feat(rpc): add `debug_getRawHeader`
+* (rpc) [#1044](https://github.com/crypto-org-chain/ethermint/pull/1044) feat(rpc): add `eth_getStorageValues`
+* (rpc) [#1037](https://github.com/crypto-org-chain/ethermint/pull/1037) feat(rpc): add `debug_getRawReceipts`
+* (rpc) [#1032](https://github.com/crypto-org-chain/ethermint/pull/1032) feat(rpc): default Block param to latest on state methods.
+* (rpc) [#1027](https://github.com/crypto-org-chain/ethermint/pull/1027) feat(rpc): add `eth_baseFee` JSON RPC method.
+* (rpc) [#1031](https://github.com/crypto-org-chain/ethermint/pull/1031) feat(rpc): include txHash in `debug_traceBlock` JSON RPC.
+* (rpc) [#1003](https://github.com/crypto-org-chain/ethermint/pull/1003) feat(rpc): direct app-mempool insert for EVM tx submission.
+* (rpc) [#1016](https://github.com/crypto-org-chain/ethermint/pull/1016) refactor(rpc): support mempool insertion from api.
+* (mempool) [#1011](https://github.com/crypto-org-chain/ethermint/pull/1011) feat(mempool): add EVM sig pre-verifier in appmempool.
+* (rpc) [#1051](https://github.com/crypto-org-chain/ethermint/pull/1051) feat(rpc): implement txpool namespace (content/inspect/status/contentFrom) backed by app mempool.
+* (deps) [#894](https://github.com/crypto-org-chain/ethermint/pull/894) feat: migrate to Cosmos SDK v0.54.3, IBC v11, CometBFT v0.39.3.
+* (ante) [#948](https://github.com/crypto-org-chain/ethermint/pull/948) fix(ante): enforce eip-1559 cost balance check even if it is not checkTx.
+* (evm) [#948](https://github.com/crypto-org-chain/ethermint/pull/948) fix(evm): fix SetCodeTx nil pointer panics, missing AuthList in Copy.
+* (evm) [#951](https://github.com/crypto-org-chain/ethermint/pull/951) chore(evm): preallocate slices in AccessList conversion functions.
+* (server) [#939](https://github.com/crypto-org-chain/ethermint/pull/939) feat(server): add `index-eth-tx range <start> <end>` subcommand for targeted block re-indexing.
+* (rpc) [#923](https://github.com/crypto-org-chain/ethermint/pull/923) fix(rpc): include block-gas-exceeded txs in `eth_getBlockReceipts` and use block-wide eth `cumulativeGasUsed`.
+* (ci) [#925](https://github.com/crypto-org-chain/ethermint/pull/925) fix(ci): fix dependabot workflows and drain PR backlog
+* (rpc) [#877](https://github.com/crypto-org-chain/ethermint/pull/877) fix(rpc): Fix eth_getBlockReceipts crash and return duplicate transaction
+* (rpc) [#876](https://github.com/crypto-org-chain/ethermint/pull/876) enforce ws origin allowlist and namespace gating.
+* (evm) [#880](https://github.com/crypto-org-chain/ethermint/pull/880) perf: reduce allocations in EVM hot paths
+* (evm) [#883](https://github.com/crypto-org-chain/ethermint/pull/883) fix: prevent nil pointer dereference on BLOBBASEFEE opcode
+* (evm) [#882](https://github.com/crypto-org-chain/ethermint/pull/882) fix: prevent nested StateDB storage overwrites
+* (rpc) [#881](https://github.com/crypto-org-chain/ethermint/pull/881) feat(RPC): implement `eth_simulateV1` RPC
+* (rpc) [#879](https://github.com/crypto-org-chain/ethermint/pull/879) fix(eth_sign): apply EIP-191 prefix to domain-separate personal signatures from transaction signatures.
+* (rpc) [#861](https://github.com/crypto-org-chain/ethermint/pull/861) fix(rpc): Missing boundary checkin GetTransactionReceipt.
+* (ante) [#849](https://github.com/crypto-org-chain/ethermint/pull/849) fix(ante): fix nonce cache stage writes until ante chain succeeds and capacity handling.
+* (deps) [#857](https://github.com/crypto-org-chain/ethermint/pull/857) feat(cosmos-sdk): Optimize staking end-block queue through using pending queue slots instead of iterators.
+* (ante) [#853](https://github.com/crypto-org-chain/ethermint/pull/853) refactor: remove redundant incarnationCache for sig verification
+* (deps) [#489](https://github.com/crypto-org-chain/ethermint/pull/489) Update cosmos-sdk to `v0.53.4`.
+* (ante) [#829](https://github.com/crypto-org-chain/ethermint/pull/829) fix: validate payload messages in legacy EIP-712
+* (evm) [#830](https://github.com/crypto-org-chain/ethermint/pull/830) fix: revert batch nonce management for call and create, align implementation with geth
+* (ante) [#839](https://github.com/crypto-org-chain/ethermint/pull/839) fix: remove unecessary maxGasWanted
+* (app) [#852](https://github.com/crypto-org-chain/ethermint/pull/852) Add interface implementation for evm and feemarket module.
+* (fix) [#878](https://github.com/crypto-org-chain/ethermint/pull/878) Patch default history serve window with correct value.
+* (evm) [#896](https://github.com/crypto-org-chain/ethermint/pull/896) fix: burn post-SELFDESTRUCT balance at commit to prevent fund recovery via address recreation
+* (rpc) [#916](https://github.com/crypto-org-chain/ethermint/pull/916) fix(rpc): return InvalidParams error when `eth_getLogs` toBlock exceeds chain head.
+* (evm) [#921](https://github.com/crypto-org-chain/ethermint/pull/921) fix: enforce floor-data-gas
+* (test) [#926](https://github.com/crypto-org-chain/ethermint/pull/926) fix(test): remove flaky `base_fee` assertion in `update_feemarket_param`.
+* (server) [#946](https://github.com/crypto-org-chain/ethermint/pull/946) feat(server): make JSON-RPC batch limits configurable.
+* (rpc) [#964](https://github.com/crypto-org-chain/ethermint/pull/964) fix(rpc): align `eth_simulateV1` response with execution-apis spec.
+* (geth) [#957](https://github.com/crypto-org-chain/ethermint/pull/957) feat(geth): update go-ethereum version to `v1.16.9`, enable Osaka hardfork
+* (evm) [#973](https://github.com/crypto-org-chain/ethermint/pull/973) fix: setting evm hooks prevent the stateDB from committing for failed tx
+* (rpc) [#965](https://github.com/crypto-org-chain/ethermint/pull/965) fix(rpc): align `eth_getBlockReceipts` response with execution-apis spec.
+* [#967](https://github.com/crypto-org-chain/ethermint/pull/967) fix(evm): align debug_trace fee with virtual ante path
 
 ## [v0.23.0] - 2026-01-13
 

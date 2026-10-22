@@ -5,6 +5,7 @@ on:
     branches:
       - develop
       - release/**
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -22,11 +23,11 @@ jobs:
   test-unit-cover:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.11"
           check-latest: true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: technote-space/get-diff-action@v6.1.2
         with:
           PATTERNS: |
@@ -49,11 +50,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.11"
           check-latest: true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: technote-space/get-diff-action@v6.1.2
         id: git_diff
         with:
@@ -70,11 +71,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.11"
           check-latest: true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: technote-space/get-diff-action@v6.1.2
         with:
           PATTERNS: |
@@ -89,20 +90,21 @@ jobs:
 
   integration_tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360
     strategy:
       matrix:
         tests: [unmarked, upgrade, filter]
     env:
       TESTS_TO_RUN: ${{ matrix.tests }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
         with:
-          nix_path: nixpkgs=channel:nixos-22.11
+          nix_path: nixpkgs=channel:nixos-25.11
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      - uses: cachix/cachix-action@v16
+            max-jobs = auto
+      - uses: cachix/cachix-action@v17
         with:
           name: crypto-ethermint
           signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
@@ -120,7 +122,7 @@ jobs:
       - name: 'Tar debug files'
         if: failure()
         run: tar cfz debug_files.tar.gz -C /tmp/pytest-of-runner .
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: debug-files
@@ -128,20 +130,21 @@ jobs:
           if-no-files-found: ignore
 
   upload-cache:
-    if: github.event_name == 'push'
-    needs: ["integration_tests"]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 360
     strategy:
       matrix:
-        os: [macos-latest]
+        os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
         with:
-          nix_path: nixpkgs=channel:nixos-22.11
+          nix_path: nixpkgs=channel:nixos-25.11
           extra_nix_config: |
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
-      - uses: cachix/cachix-action@v16
+            max-jobs = auto
+      - uses: cachix/cachix-action@v17
         with:
           name: crypto-ethermint
           signingKey: "${{ secrets.CACHIX_SIGNING_KEY }}"
@@ -152,11 +155,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.11"
           check-latest: true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: technote-space/get-diff-action@v6.1.2
         with:
           PATTERNS: |
@@ -172,11 +175,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.11"
           check-latest: true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: technote-space/get-diff-action@v6.1.2
         with:
           PATTERNS: |
@@ -192,11 +195,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.11"
           check-latest: true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: technote-space/get-diff-action@v6.1.2
         with:
           PATTERNS: |
@@ -212,11 +215,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.11"
           check-latest: true
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: technote-space/get-diff-action@v6.1.2
         with:
           PATTERNS: |

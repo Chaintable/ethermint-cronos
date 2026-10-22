@@ -64,7 +64,7 @@ func (s *reconcileSummary) changed() bool {
 // whole trace: emitting unreconciled data would silently reintroduce the
 // replay-divergence class this exists to fix.
 func (api *API) loadConsensus(blockHeight rpctypes.BlockNumber) (map[string]*consensusReceipt, error) {
-	rcpts, err := api.backend.GetBlockReceipts(blockHeight)
+	rcpts, err := api.backend.GetBlockReceipts(rpctypes.BlockNumberOrHash{BlockNumber: &blockHeight})
 	if err != nil {
 		return nil, fmt.Errorf("load consensus receipts for block %d: %w", blockHeight, err)
 	}

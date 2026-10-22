@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"testing"
+	"time"
 
 	"cosmossdk.io/math"
 	"github.com/cosmos/cosmos-sdk/client"
@@ -18,6 +19,7 @@ import (
 
 	txtypes "github.com/cosmos/cosmos-sdk/types/tx"
 	"github.com/cosmos/cosmos-sdk/types/tx/signing"
+	"github.com/cosmos/cosmos-sdk/x/auth/migrations/legacytx"
 	authsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	distributiontypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
@@ -381,6 +383,177 @@ func (suite *EIP712TestSuite) TestEIP712() {
 				}
 			})
 		}
+	}
+}
+
+func (suite *EIP712TestSuite) TestEIP712RejectsUnsignedDirectFields() {
+	suite.SetupTest()
+
+	privKey, pubKey := suite.createTestKeyPair()
+
+	testCases := []struct {
+		name         string
+		malleate     func(txBuilder client.TxBuilder)
+		expErr       string
+		expLegacyErr string
+	}{
+		{
+			name: "timeout_timestamp",
+			malleate: func(txBuilder client.TxBuilder) {
+				txBuilder.SetTimeoutTimestamp(time.Unix(1700000000, 0).UTC())
+			},
+			expErr:       "TimeoutTimestamp",
+			expLegacyErr: "TimeoutTimestamp",
+		},
+		{
+			name: "fee granter",
+			malleate: func(txBuilder client.TxBuilder) {
+				txBuilder.SetFeeGranter(suite.createTestAddress())
+			},
+			expErr:       "EIP-712 signing does not commit fee granter, so it must be empty",
+			expLegacyErr: "legacy EIP-712 signing does not commit fee granter, so it must be empty",
+		},
+	}
+
+	cleanBytes := suite.buildDirectSignBytes(pubKey, nil)
+
+	// A clean doc converts on both fallback paths, and its signature verifies.
+	cleanEIP712, err := eip712.GetEIP712BytesForMsg(cleanBytes)
+	suite.Require().NoError(err)
+	_, err = eip712.LegacyGetEIP712BytesForMsg(cleanBytes)
+	suite.Require().NoError(err)
+	sig, err := privKey.Sign(cleanEIP712)
+	suite.Require().NoError(err)
+	suite.Require().True(pubKey.VerifySignature(cleanBytes, sig), "signature should verify against the signed tx")
+
+	for _, tc := range testCases {
+		suite.Run(tc.name, func() {
+			mutatedBytes := suite.buildDirectSignBytes(pubKey, tc.malleate)
+			// The mutation changes the direct sign bytes, so a correct verifier must distinguish them.
+			suite.Require().NotEqual(cleanBytes, mutatedBytes)
+
+			_, err := eip712.GetEIP712BytesForMsg(mutatedBytes)
+			suite.Require().ErrorContains(err, tc.expErr)
+			_, err = eip712.LegacyGetEIP712BytesForMsg(mutatedBytes)
+			suite.Require().ErrorContains(err, tc.expLegacyErr)
+
+			suite.Require().False(pubKey.VerifySignature(mutatedBytes, sig), "signature must not verify against a mutated tx")
+		})
+	}
+}
+
+func (suite *EIP712TestSuite) buildDirectSignBytes(pubKey *ethsecp256k1.PubKey, malleate func(client.TxBuilder)) []byte {
+	signer := sdk.AccAddress(pubKey.Bytes())
+	txBuilder := suite.clientCtx.TxConfig.NewTxBuilder()
+	txBuilder.SetGasLimit(20000)
+	txBuilder.SetFeeAmount(suite.makeCoins(suite.denom, math.NewInt(2000)))
+
+	err := txBuilder.SetMsgs(banktypes.NewMsgSend(
+		signer,
+		suite.createTestAddress(),
+		suite.makeCoins(suite.denom, math.NewInt(1)),
+	))
+	suite.Require().NoError(err)
+
+	if malleate != nil {
+		malleate(txBuilder)
+	}
+
+	err = txBuilder.SetSignatures(signing.SignatureV2{
+		PubKey:   pubKey,
+		Data:     &signing.SingleSignatureData{SignMode: signing.SignMode_SIGN_MODE_DIRECT},
+		Sequence: 0,
+	})
+	suite.Require().NoError(err)
+
+	signerData := authsigning.SignerData{
+		ChainID:       testutil.TestnetChainID + "-1",
+		AccountNumber: 25,
+		Sequence:      0,
+		PubKey:        pubKey,
+		Address:       sdk.MustBech32ifyAddressBytes(config.Bech32Prefix, pubKey.Bytes()),
+	}
+
+	bz, err := authsigning.GetSignBytesAdapter(
+		suite.clientCtx.CmdContext,
+		suite.clientCtx.TxConfig.SignModeHandler(),
+		signing.SignMode_SIGN_MODE_DIRECT,
+		signerData,
+		txBuilder.GetTx(),
+	)
+	suite.Require().NoError(err)
+	return bz
+}
+
+func (suite *EIP712TestSuite) TestGetEIP712TypedDataForMsgRejectsUnsignedAminoFields() {
+	suite.SetupTest()
+
+	// StdSignBytes requires RegressionTestingAminoCodec to be set; use the same
+	// amino codec eip712 decodes with, so message type names match.
+	legacytx.RegressionTestingAminoCodec = suite.config.Amino
+
+	_, pubKey := suite.createTestKeyPair()
+	signer := sdk.AccAddress(pubKey.Bytes())
+
+	msg := banktypes.NewMsgSend(
+		signer,
+		suite.createTestAddress(),
+		suite.makeCoins(suite.denom, math.NewInt(1)),
+	)
+
+	testCases := []struct {
+		name          string
+		timeoutHeight uint64
+		granter       string
+		expErr        string
+		expLegacyErr  string
+	}{
+		{
+			name: "clean doc succeeds",
+		},
+		{
+			name:          "timeout_height",
+			timeoutHeight: 1000,
+			expErr:        "EIP-712 signing does not commit timeout_height, so it must be 0",
+			expLegacyErr:  "legacy EIP-712 signing does not commit timeout_height, so it must be 0",
+		},
+		{
+			name:         "fee granter",
+			granter:      suite.createTestAddress().String(),
+			expErr:       "EIP-712 signing does not commit fee granter, so it must be empty",
+			expLegacyErr: "legacy EIP-712 signing does not commit fee granter, so it must be empty",
+		},
+	}
+
+	for _, tc := range testCases {
+		suite.Run(tc.name, func() {
+			fee := legacytx.NewStdFee(20000, suite.makeCoins(suite.denom, math.NewInt(2000))) //nolint:staticcheck
+			fee.Granter = tc.granter
+
+			signDocBytes := legacytx.StdSignBytes( //nolint:staticcheck
+				testutil.TestnetChainID+"-1",
+				25,
+				0,
+				tc.timeoutHeight,
+				fee,
+				[]sdk.Msg{msg},
+				"",
+			)
+
+			_, err := eip712.LegacyGetEIP712TypedDataForMsg(signDocBytes)
+			if tc.expLegacyErr == "" {
+				suite.Require().NoError(err)
+			} else {
+				suite.Require().ErrorContains(err, tc.expLegacyErr)
+			}
+
+			_, err = eip712.GetEIP712TypedDataForMsg(signDocBytes)
+			if tc.expErr == "" {
+				suite.Require().NoError(err)
+			} else {
+				suite.Require().ErrorContains(err, tc.expErr)
+			}
+		})
 	}
 }
 
