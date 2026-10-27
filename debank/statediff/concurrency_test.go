@@ -5,11 +5,10 @@ import (
 	"sync"
 	"testing"
 
-	"cosmossdk.io/log"
-	iavlstore "cosmossdk.io/store/iavl"
-	"cosmossdk.io/store/metrics"
-	storetypes "cosmossdk.io/store/types"
+	"cosmossdk.io/log/v2"
 	dbm "github.com/cosmos/cosmos-db"
+	iavlstore "github.com/cosmos/cosmos-sdk/store/v2/iavl"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	"github.com/cosmos/iavl"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +24,6 @@ func newLiveIAVLStore(t *testing.T) *iavlstore.Store {
 		storetypes.CommitID{},
 		1000,
 		false,
-		metrics.NewNoOpMetrics(),
 	)
 	require.NoError(t, err)
 	store, ok := commitStore.(*iavlstore.Store)

@@ -18,17 +18,17 @@ package server
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
 	"sync"
+	"time"
 
-	iavlstore "cosmossdk.io/store/iavl"
-	storetypes "cosmossdk.io/store/types"
 	"github.com/cosmos/cosmos-sdk/codec"
 	"github.com/cosmos/cosmos-sdk/crypto/keyring"
+	iavlstore "github.com/cosmos/cosmos-sdk/store/v2/iavl"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	"github.com/cosmos/cosmos-sdk/telemetry"
 	"golang.org/x/sync/errgroup"
 
@@ -51,13 +51,10 @@ import (
 	cmttypes "github.com/cometbft/cometbft/types"
 	dbm "github.com/cosmos/cosmos-db"
 
-	"github.com/cosmos/rosetta"
-
 	ethmetricsexp "github.com/ethereum/go-ethereum/metrics/exp"
 
 	errorsmod "cosmossdk.io/errors"
-	"cosmossdk.io/log"
-	pruningtypes "cosmossdk.io/store/pruning/types"
+	"cosmossdk.io/log/v2"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/flags"
 	"github.com/cosmos/cosmos-sdk/server"
@@ -66,7 +63,7 @@ import (
 	servergrpc "github.com/cosmos/cosmos-sdk/server/grpc"
 	servercmtlog "github.com/cosmos/cosmos-sdk/server/log"
 	"github.com/cosmos/cosmos-sdk/server/types"
-	sdk "github.com/cosmos/cosmos-sdk/types"
+	pruningtypes "github.com/cosmos/cosmos-sdk/store/v2/pruning/types"
 	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
 
 	"github.com/evmos/ethermint/debank/statediff"
@@ -84,11 +81,11 @@ type DBOpener func(opts types.AppOptions, rootDir string, backend dbm.BackendTyp
 
 type AppWithPendingTxListener interface {
 	types.Application
-	PendingTxListener
+	AppServices
 }
 
-// AppCreator is a function that allows us to lazily initialize an application implementing with AppWithPendingTxStream.
-type AppCreator func(log.Logger, dbm.DB, io.Writer, types.AppOptions) AppWithPendingTxListener
+// AppCreator lazily builds an application that implements AppWithPendingTxListener.
+type AppCreator func(log.Logger, dbm.DB, types.AppOptions) AppWithPendingTxListener
 
 // StartOptions defines options that can be customized in `StartCmd`
 type StartOptions struct {
@@ -97,11 +94,11 @@ type StartOptions struct {
 	DBOpener        DBOpener
 }
 
-// NewDefaultStartOptions use the default db opener provided in tm-db.
+// NewDefaultStartOptions wraps appCreator for the SDK server and uses the default openDB opener.
 func NewDefaultStartOptions(appCreator AppCreator, defaultNodeHome string) StartOptions {
 	return StartOptions{
-		AppCreator: func(l log.Logger, d dbm.DB, w io.Writer, ao types.AppOptions) types.Application {
-			return appCreator(l, d, w, ao)
+		AppCreator: func(l log.Logger, d dbm.DB, ao types.AppOptions) types.Application {
+			return appCreator(l, d, ao)
 		},
 		DefaultNodeHome: defaultNodeHome,
 		DBOpener:        openDB,
@@ -156,6 +153,19 @@ which accepts a path for the resulting pprof file.
 				return err
 			}
 
+			otelFile := filepath.Join(clientCtx.HomeDir, "config", telemetry.OtelFileName)
+			if err := telemetry.InitializeOpenTelemetry(otelFile); err != nil {
+				return fmt.Errorf("failed to initialize OpenTelemetry: %w", err)
+			}
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+
+				if err := telemetry.Shutdown(ctx); err != nil {
+					serverCtx.Logger.Error("failed to shutdown OpenTelemetry", "err", err)
+				}
+			}()
+
 			withTM, _ := cmd.Flags().GetBool(srvflags.WithCometBFT)
 			if !withTM {
 				serverCtx.Logger.Info("starting ABCI without CometBFT")
@@ -196,7 +206,7 @@ which accepts a path for the resulting pprof file.
 	cmd.Flags().Bool(srvflags.WithCometBFT, true, "Run abci app embedded in-process with tendermint")
 	cmd.Flags().String(srvflags.Address, "tcp://0.0.0.0:26658", "Listen address")
 	cmd.Flags().String(srvflags.Transport, "socket", "Transport protocol: socket, grpc")
-	cmd.Flags().String(srvflags.TraceStore, "", "Enable KVStore tracing to an output file")
+	cmd.Flags().String(srvflags.TraceStore, "", "[unsupported since SDK v0.54] Enable KVStore tracing to an output file")
 	cmd.Flags().String(server.FlagMinGasPrices, "", "Minimum gas prices to accept for transactions; Any fee in a tx must meet this minimum (e.g. 0.01photon;0.0001stake)") //nolint:lll
 	cmd.Flags().IntSlice(server.FlagUnsafeSkipUpgrades, []int{}, "Skip a set of upgrade heights to continue the old binary")
 	cmd.Flags().Uint64(server.FlagHaltHeight, 0, "Block height at which to gracefully halt the chain and shutdown the node")
@@ -214,7 +224,9 @@ which accepts a path for the resulting pprof file.
 	cmd.Flags().Bool(srvflags.GRPCOnly, false, "Start the node in gRPC query only mode without CometBFT process")
 	cmd.Flags().Bool(srvflags.GRPCEnable, true, "Define if the gRPC server should be enabled")
 	cmd.Flags().String(srvflags.GRPCAddress, serverconfig.DefaultGRPCAddress, "the gRPC server address to listen on")
+	cmd.Flags().Bool(srvflags.GRPCSkipCheckHeader, false, "Define if the gRPC server should bypass check header")
 	cmd.Flags().Bool(srvflags.GRPCWebEnable, true, "Define if the gRPC-Web server should be enabled. (Note: gRPC must also be enabled.)")
+	cmd.Flags().String(srvflags.GRPCHistoricalAddressBlockRange, "", "Define if historical grpc and block range is available")
 
 	cmd.Flags().Bool(srvflags.RPCEnable, false, "Defines if Cosmos-sdk REST server should be enabled")
 	cmd.Flags().Bool(srvflags.EnabledUnsafeCors, false, "Defines if CORS should be enabled (unsafe - use it at your own risk)")
@@ -241,8 +253,7 @@ which accepts a path for the resulting pprof file.
 	cmd.Flags().Bool(srvflags.JSONRPCRestrictUserInput, false, "Restrict some user input to the JSON-RPC debug apis, must be set to true if serving debug namespace to the public") //nolint:lll
 	cmd.Flags().Bool(srvflags.JSONRPCEnableMetrics, false, "Define if EVM rpc metrics server should be enabled")
 
-	cmd.Flags().String(srvflags.EVMTracer, config.DefaultEVMTracer, "the EVM tracer type to collect execution traces from the EVM transaction execution (json|struct|access_list|markdown)") //nolint:lll
-	cmd.Flags().Uint64(srvflags.EVMMaxTxGasWanted, config.DefaultMaxTxGasWanted, "the gas wanted for each eth tx returned in ante handler in check tx mode")                                 //nolint:lll
+	cmd.Flags().String(srvflags.EVMTracer, config.DefaultEVMTracer, "the EVM tracer type to collect execution traces from the EVM transaction execution (json|struct|access_list|markdown)") //nolint:lll                              //nolint:lll
 
 	cmd.Flags().String(srvflags.TLSCertPath, "", "the cert.pem file path for the server TLS configuration")
 	cmd.Flags().String(srvflags.TLSKeyPath, "", "the key.pem file path for the server TLS configuration")
@@ -263,18 +274,16 @@ func startStandAlone(svrCtx *server.Context, opts StartOptions) error {
 	transport := svrCtx.Viper.GetString(srvflags.Transport)
 	home := svrCtx.Viper.GetString(flags.FlagHome)
 
+	if svrCtx.Viper.GetString(srvflags.TraceStore) != "" {
+		svrCtx.Logger.Error("--trace-store is no longer supported and has no effect; store tracing was removed in the SDK v0.54 migration")
+	}
+
 	db, err := opts.DBOpener(svrCtx.Viper, home, server.GetAppDBBackend(svrCtx.Viper))
 	if err != nil {
 		return err
 	}
 
-	traceWriterFile := svrCtx.Viper.GetString(srvflags.TraceStore)
-	traceWriter, err := openTraceWriter(traceWriterFile)
-	if err != nil {
-		return err
-	}
-
-	app := opts.AppCreator(svrCtx.Logger, db, traceWriter, svrCtx.Viper)
+	app := opts.AppCreator(svrCtx.Logger, db, svrCtx.Viper)
 	defer func() {
 		if err := app.Close(); err != nil {
 			svrCtx.Logger.Error("close application failed", "error", err.Error())
@@ -329,16 +338,13 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 	logger := svrCtx.Logger
 	g, ctx := getCtx(svrCtx, true)
 
+	if svrCtx.Viper.GetString(srvflags.TraceStore) != "" {
+		logger.Error("--trace-store is no longer supported and has no effect; store tracing was removed in the SDK v0.54 migration")
+	}
+
 	db, err := opts.DBOpener(svrCtx.Viper, home, server.GetAppDBBackend(svrCtx.Viper))
 	if err != nil {
 		logger.Error("failed to open DB", "error", err.Error())
-		return err
-	}
-
-	traceWriterFile := svrCtx.Viper.GetString(srvflags.TraceStore)
-	traceWriter, err := openTraceWriter(traceWriterFile)
-	if err != nil {
-		logger.Error("failed to open trace writer", "error", err.Error())
 		return err
 	}
 
@@ -353,7 +359,7 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 		return err
 	}
 
-	app := opts.AppCreator(svrCtx.Logger, db, traceWriter, svrCtx.Viper)
+	app := opts.AppCreator(svrCtx.Logger, db, svrCtx.Viper)
 	defer func() {
 		if err := app.Close(); err != nil {
 			logger.Error("close application failed", "error", err.Error())
@@ -386,15 +392,9 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 
 		cmtApp := server.NewCometABCIWrapper(app)
 
-		clientCreator := &consensusMutexClientCreator{
-			mtx: abciMtx,
-			app: cmtApp,
-			// Same concurrency models as cometbft's own local client creators:
-			// with async check tx only consensus is serialized, otherwise every
-			// connection shares the mutex.
-			syncAllConnections: !svrCtx.Viper.GetBool(FlagAsyncCheckTx),
-		}
-		if !clientCreator.syncAllConnections {
+		syncAllConnections := !svrCtx.Viper.GetBool(FlagAsyncCheckTx)
+		clientCreator := NewConsensusMutexClientCreator(abciMtx, cmtApp, syncAllConnections)
+		if !syncAllConnections {
 			logger.Info("enabling async check tx")
 		}
 
@@ -500,10 +500,6 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 		return g.Wait()
 	}
 
-	if err := startRosettaServer(svrCtx, clientCtx, g, config); err != nil {
-		return err
-	}
-
 	return g.Wait()
 }
 
@@ -518,24 +514,11 @@ func OpenIndexerDB(rootDir string, backendType dbm.BackendType) (dbm.DB, error) 
 	return dbm.NewDB("evmindexer", backendType, dataDir)
 }
 
-func openTraceWriter(traceWriterFile string) (w io.Writer, err error) {
-	if traceWriterFile == "" {
-		return
-	}
-
-	filePath := filepath.Clean(traceWriterFile)
-	return os.OpenFile(
-		filePath,
-		os.O_WRONLY|os.O_APPEND|os.O_CREATE,
-		0o600,
-	)
-}
-
-func startTelemetry(cfg config.Config) (*telemetry.Metrics, error) {
-	if !cfg.Telemetry.Enabled {
+func startTelemetry(cfg config.Config) (*telemetry.Metrics, error) { //nolint:staticcheck
+	if !cfg.Telemetry.Enabled { //nolint:staticcheck
 		return nil, nil
 	}
-	return telemetry.New(cfg.Telemetry)
+	return telemetry.New(cfg.Telemetry) //nolint:staticcheck
 }
 
 // wrapCPUProfile runs callback in a goroutine, then wait for quit signals.
@@ -642,7 +625,7 @@ func startAPIServer(
 	svrCfg serverconfig.Config,
 	app types.Application,
 	grpcSrv *grpc.Server,
-	metrics *telemetry.Metrics,
+	metrics *telemetry.Metrics, //nolint:staticcheck
 ) {
 	if !svrCfg.API.Enable {
 		return
@@ -651,8 +634,8 @@ func startAPIServer(
 	apiSrv := api.New(clientCtx, svrCtx.Logger.With("server", "api"), grpcSrv)
 	app.RegisterAPIRoutes(apiSrv, svrCfg.API)
 
-	if svrCfg.Telemetry.Enabled {
-		apiSrv.SetTelemetry(metrics)
+	if svrCfg.Telemetry.Enabled { //nolint:staticcheck
+		apiSrv.SetTelemetry(metrics) //nolint:staticcheck
 	}
 
 	g.Go(func() error {
@@ -673,9 +656,10 @@ func startJSONRPCServer(
 ) (ctx client.Context, err error) {
 	ctx = clientCtx
 	if !config.JSONRPC.Enable {
-		return
+		return ctx, err
 	}
-	txApp, ok := app.(AppWithPendingTxListener)
+
+	txApp, ok := app.(AppServices)
 	if !ok {
 		return ctx, fmt.Errorf("json-rpc server requires AppWithPendingTxStream")
 	}
@@ -690,50 +674,73 @@ func startJSONRPCServer(
 	return
 }
 
-// consensusMutexClientCreator mirrors cometbft's local client creators but
-// keeps a handle on the mutex that serializes consensus ABCI calls
-// (FinalizeBlock/Commit). The DeBank state-diff emitter reads the live IAVL
-// commit store from the JSON-RPC goroutine, bypassing ABCI entirely, so it
-// takes the same mutex and never runs concurrently with block execution.
+// consensusMutexClientCreator shares the live IAVL read lock with every ABCI connection.
 type consensusMutexClientCreator struct {
-	mtx                *cmtsync.Mutex
-	app                abcitypes.Application
-	syncAllConnections bool
+	mtx *cmtsync.Mutex
+	app abcitypes.Application
 }
 
-var _ proxy.ClientCreator = (*consensusMutexClientCreator)(nil)
-
-// NewConsensusMutexClientCreator builds the node's ABCI client creator around a
-// caller-owned mutex. Callers that stand up a node outside startInProcess (the
-// test network) pass the same mutex to StartJSONRPC, so the state-diff emitter
-// is serialized against block execution there too.
-func NewConsensusMutexClientCreator(
-	mtx *cmtsync.Mutex, app abcitypes.Application, syncAllConnections bool,
-) proxy.ClientCreator {
-	return &consensusMutexClientCreator{mtx: mtx, app: app, syncAllConnections: syncAllConnections}
-}
-
-func (c *consensusMutexClientCreator) NewABCIConsensusClient() (abcicli.Client, error) {
+func (c *consensusMutexClientCreator) NewABCIClient() (abcicli.Client, error) {
 	return abcicli.NewLocalClient(c.mtx, c.app), nil
 }
 
-func (c *consensusMutexClientCreator) NewABCIMempoolClient() (abcicli.Client, error) {
-	return c.newOtherClient()
-}
-
-func (c *consensusMutexClientCreator) NewABCIQueryClient() (abcicli.Client, error) {
-	return c.newOtherClient()
-}
-
-func (c *consensusMutexClientCreator) NewABCISnapshotClient() (abcicli.Client, error) {
-	return c.newOtherClient()
-}
-
-func (c *consensusMutexClientCreator) newOtherClient() (abcicli.Client, error) {
-	if c.syncAllConnections {
-		return abcicli.NewLocalClient(c.mtx, c.app), nil
+// NewConsensusMutexClientCreator preserves CometBFT's connection locking while
+// serializing consensus execution with the DeBank emitter's live IAVL reads.
+func NewConsensusMutexClientCreator(mtx *cmtsync.Mutex, app abcitypes.Application, syncAllConnections bool) proxy.ClientCreator {
+	if syncAllConnections {
+		return &consensusMutexClientCreator{mtx: mtx, app: app}
 	}
-	return abcicli.NewUnsyncLocalClient(c.app), nil
+	// v0.39 creates clients without identifying their connection role. Lock the
+	// consensus methods on the application and let CometBFT create its usual
+	// per-connection mutexes for CheckTx, queries and snapshots.
+	return proxy.NewConnSyncLocalClientCreator(&consensusLockedApp{Application: app, mtx: mtx})
+}
+
+type consensusLockedApp struct {
+	abcitypes.Application
+	mtx sync.Locker
+}
+
+func (a *consensusLockedApp) InitChain(ctx context.Context, req *abcitypes.RequestInitChain) (*abcitypes.ResponseInitChain, error) {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+	return a.Application.InitChain(ctx, req)
+}
+
+func (a *consensusLockedApp) PrepareProposal(ctx context.Context, req *abcitypes.RequestPrepareProposal) (*abcitypes.ResponsePrepareProposal, error) {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+	return a.Application.PrepareProposal(ctx, req)
+}
+
+func (a *consensusLockedApp) ProcessProposal(ctx context.Context, req *abcitypes.RequestProcessProposal) (*abcitypes.ResponseProcessProposal, error) {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+	return a.Application.ProcessProposal(ctx, req)
+}
+
+func (a *consensusLockedApp) FinalizeBlock(ctx context.Context, req *abcitypes.RequestFinalizeBlock) (*abcitypes.ResponseFinalizeBlock, error) {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+	return a.Application.FinalizeBlock(ctx, req)
+}
+
+func (a *consensusLockedApp) ExtendVote(ctx context.Context, req *abcitypes.RequestExtendVote) (*abcitypes.ResponseExtendVote, error) {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+	return a.Application.ExtendVote(ctx, req)
+}
+
+func (a *consensusLockedApp) VerifyVoteExtension(ctx context.Context, req *abcitypes.RequestVerifyVoteExtension) (*abcitypes.ResponseVerifyVoteExtension, error) {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+	return a.Application.VerifyVoteExtension(ctx, req)
+}
+
+func (a *consensusLockedApp) Commit(ctx context.Context, req *abcitypes.RequestCommit) (*abcitypes.ResponseCommit, error) {
+	a.mtx.Lock()
+	defer a.mtx.Unlock()
+	return a.Application.Commit(ctx, req)
 }
 
 type namedCommitMultiStore interface {
@@ -753,7 +760,7 @@ func resolveStateChangeSource(app types.Application, codec codec.Codec, abciMtx 
 		if !found {
 			return nil, fmt.Errorf("trace namespace requires the %s store", name)
 		}
-		commitStore := cms.GetCommitKVStore(key)
+		commitStore := cms.GetStore(key)
 		store, found := commitStore.(*iavlstore.Store)
 		if !found {
 			return nil, fmt.Errorf("trace namespace requires a standard IAVL %s store, got %T", name, commitStore)
@@ -772,54 +779,6 @@ func namespaceEnabled(namespaces []string, target string) bool {
 		}
 	}
 	return false
-}
-
-func startRosettaServer(
-	svrCtx *server.Context,
-	clientCtx client.Context,
-	g *errgroup.Group,
-	config config.Config,
-) error {
-	if !config.Rosetta.Enable {
-		return nil
-	}
-
-	offlineMode := config.Rosetta.Offline
-
-	// If GRPC is not enabled rosetta cannot work in online mode, so it works in
-	// offline mode.
-	if !config.GRPC.Enable {
-		offlineMode = true
-	}
-
-	minGasPrices, err := sdk.ParseDecCoins(config.MinGasPrices)
-	if err != nil {
-		svrCtx.Logger.Error("failed to parse minimum-gas-prices", "error", err.Error())
-		return err
-	}
-
-	conf := &rosetta.Config{
-		Blockchain:          config.Rosetta.Blockchain,
-		Network:             config.Rosetta.Network,
-		TendermintRPC:       svrCtx.Config.RPC.ListenAddress,
-		GRPCEndpoint:        config.GRPC.Address,
-		Addr:                config.Rosetta.Addr,
-		Retries:             config.Rosetta.Retries,
-		Offline:             offlineMode,
-		GasToSuggest:        config.Rosetta.GasToSuggest,
-		EnableFeeSuggestion: config.Rosetta.EnableFeeSuggestion,
-		GasPrices:           minGasPrices.Sort(),
-		Codec:               clientCtx.Codec.(*codec.ProtoCodec),
-		InterfaceRegistry:   clientCtx.InterfaceRegistry,
-	}
-
-	rosettaSrv, err := rosetta.ServerFromConfig(conf)
-	if err != nil {
-		return err
-	}
-
-	g.Go(rosettaSrv.Start)
-	return nil
 }
 
 // returns a function which returns the genesis doc from the genesis file.

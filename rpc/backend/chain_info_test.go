@@ -13,7 +13,9 @@ import (
 
 	"github.com/cometbft/cometbft/abci/types"
 	tmrpctypes "github.com/cometbft/cometbft/rpc/core/types"
+	tmtypes "github.com/cometbft/cometbft/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/stretchr/testify/mock"
 
 	sdkmath "cosmossdk.io/math"
 	"github.com/evmos/ethermint/rpc/backend/mocks"
@@ -336,7 +338,7 @@ func (suite *BackendTestSuite) TestFeeHistory() {
 			func(validator sdk.AccAddress) {
 				var header metadata.MD
 				queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
-				suite.backend.cfg.JSONRPC.FeeHistoryCap = 0
+				suite.backend.cfg.JSONRPC.FeeHistoryCap = 2
 				RegisterParamsError(queryClient, &header, ethrpc.BlockNumber(1).Int64())
 			},
 			1,
@@ -347,18 +349,55 @@ func (suite *BackendTestSuite) TestFeeHistory() {
 			nil,
 		},
 		{
-			"fail - user block count higher than max block count ",
+			"pass - user block count higher than max block count is silently capped",
+			func(validator sdk.AccAddress) {
+				queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
+				client := suite.backend.clientCtx.Client.(*mocks.Client)
+				suite.backend.cfg.JSONRPC.FeeHistoryCap = 1
+				var header metadata.MD
+				RegisterParams(queryClient, &header, 1)
+				RegisterParamsWithoutHeader(queryClient, 1)
+				RegisterBlock(client, ethrpc.BlockNumber(1).Int64(), nil)
+				RegisterEmptyBlockResults(client, 1)
+				RegisterBaseFeeError(queryClient)
+				RegisterValidatorAccount(queryClient, validator)
+				RegisterConsensusParams(client, 1)
+				fQueryClient := suite.backend.queryClient.FeeMarket.(*mocks.FeeMarketQueryClient)
+				RegisterFeeMarketParams(fQueryClient, 1)
+			},
+			2,
+			1,
+			&rpc.FeeHistoryResult{
+				OldestBlock:      (*hexutil.Big)(big.NewInt(1)),
+				BaseFee:          []*hexutil.Big{(*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(new(big.Int).SetBits([]big.Word{}))},
+				GasUsedRatio:     []float64{0},
+				Reward:           [][]*hexutil.Big{{(*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0))}},
+				BlobBaseFee:      []*hexutil.Big{(*hexutil.Big)(new(big.Int)), (*hexutil.Big)(new(big.Int))},
+				BlobGasUsedRatio: []float64{0},
+			},
+			sdk.AccAddress(tests.GenerateAddress().Bytes()),
+			true,
+			nil,
+		},
+		{
+			"pass - blockCount 0 returns empty result",
 			func(validator sdk.AccAddress) {
 				var header metadata.MD
 				queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
-				suite.backend.cfg.JSONRPC.FeeHistoryCap = 0
+				suite.backend.cfg.JSONRPC.FeeHistoryCap = 2
 				RegisterParams(queryClient, &header, ethrpc.BlockNumber(1).Int64())
 			},
-			1,
+			0,
 			-1,
+			&rpc.FeeHistoryResult{
+				OldestBlock:      (*hexutil.Big)(new(big.Int)),
+				BaseFee:          []*hexutil.Big{},
+				GasUsedRatio:     []float64{},
+				BlobBaseFee:      []*hexutil.Big{},
+				BlobGasUsedRatio: []float64{},
+			},
 			nil,
-			nil,
-			false,
+			true,
 			nil,
 		},
 		{
@@ -423,7 +462,7 @@ func (suite *BackendTestSuite) TestFeeHistory() {
 				RegisterParams(queryClient, &header, 1)
 				RegisterParamsWithoutHeader(queryClient, 1)
 				RegisterBlock(client, ethrpc.BlockNumber(1).Int64(), nil)
-				RegisterBlockResults(client, 1)
+				RegisterEmptyBlockResults(client, 1)
 				RegisterBaseFeeError(queryClient)
 				RegisterValidatorAccount(queryClient, validator)
 				RegisterConsensusParams(client, 1)
@@ -433,10 +472,12 @@ func (suite *BackendTestSuite) TestFeeHistory() {
 			1,
 			1,
 			&rpc.FeeHistoryResult{
-				OldestBlock:  (*hexutil.Big)(big.NewInt(1)),
-				BaseFee:      []*hexutil.Big{(*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(new(big.Int).SetBits([]big.Word{}))},
-				GasUsedRatio: []float64{0},
-				Reward:       [][]*hexutil.Big{{(*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0))}},
+				OldestBlock:      (*hexutil.Big)(big.NewInt(1)),
+				BaseFee:          []*hexutil.Big{(*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(new(big.Int).SetBits([]big.Word{}))},
+				GasUsedRatio:     []float64{0},
+				Reward:           [][]*hexutil.Big{{(*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0))}},
+				BlobBaseFee:      []*hexutil.Big{(*hexutil.Big)(new(big.Int)), (*hexutil.Big)(new(big.Int))},
+				BlobGasUsedRatio: []float64{0},
 			},
 			sdk.AccAddress(tests.GenerateAddress().Bytes()),
 			true,
@@ -452,7 +493,7 @@ func (suite *BackendTestSuite) TestFeeHistory() {
 				client := suite.backend.clientCtx.Client.(*mocks.Client)
 				suite.backend.cfg.JSONRPC.FeeHistoryCap = 2
 				RegisterBlock(client, ethrpc.BlockNumber(1).Int64(), nil)
-				RegisterBlockResults(client, 1)
+				RegisterEmptyBlockResults(client, 1)
 				RegisterBaseFee(queryClient, baseFee)
 				RegisterValidatorAccount(queryClient, validator)
 				RegisterConsensusParams(client, 1)
@@ -463,10 +504,12 @@ func (suite *BackendTestSuite) TestFeeHistory() {
 			1,
 			1,
 			&rpc.FeeHistoryResult{
-				OldestBlock:  (*hexutil.Big)(big.NewInt(1)),
-				BaseFee:      []*hexutil.Big{(*hexutil.Big)(big.NewInt(1)), (*hexutil.Big)(big.NewInt(1))},
-				GasUsedRatio: []float64{0},
-				Reward:       [][]*hexutil.Big{{(*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0))}},
+				OldestBlock:      (*hexutil.Big)(big.NewInt(1)),
+				BaseFee:          []*hexutil.Big{(*hexutil.Big)(big.NewInt(1)), (*hexutil.Big)(big.NewInt(1))},
+				GasUsedRatio:     []float64{0},
+				Reward:           [][]*hexutil.Big{{(*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0))}},
+				BlobBaseFee:      []*hexutil.Big{(*hexutil.Big)(new(big.Int)), (*hexutil.Big)(new(big.Int))},
+				BlobGasUsedRatio: []float64{0},
 			},
 			sdk.AccAddress(tests.GenerateAddress().Bytes()),
 			true,
@@ -482,7 +525,7 @@ func (suite *BackendTestSuite) TestFeeHistory() {
 				client := suite.backend.clientCtx.Client.(*mocks.Client)
 				suite.backend.cfg.JSONRPC.FeeHistoryCap = 2
 				RegisterBlock(client, ethrpc.BlockNumber(1).Int64(), nil)
-				RegisterBlockResults(client, 1)
+				RegisterEmptyBlockResults(client, 1)
 				RegisterBaseFee(queryClient, baseFee)
 				RegisterValidatorAccount(queryClient, validator)
 				RegisterConsensusParams(client, 1)
@@ -493,10 +536,12 @@ func (suite *BackendTestSuite) TestFeeHistory() {
 			1,
 			1,
 			&rpc.FeeHistoryResult{
-				OldestBlock:  (*hexutil.Big)(big.NewInt(1)),
-				BaseFee:      []*hexutil.Big{(*hexutil.Big)(big.NewInt(1)), (*hexutil.Big)(big.NewInt(0))},
-				GasUsedRatio: []float64{0},
-				Reward:       [][]*hexutil.Big{{(*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0))}},
+				OldestBlock:      (*hexutil.Big)(big.NewInt(1)),
+				BaseFee:          []*hexutil.Big{(*hexutil.Big)(big.NewInt(1)), (*hexutil.Big)(big.NewInt(0))},
+				GasUsedRatio:     []float64{0},
+				Reward:           [][]*hexutil.Big{{(*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0)), (*hexutil.Big)(big.NewInt(0))}},
+				BlobBaseFee:      []*hexutil.Big{(*hexutil.Big)(new(big.Int)), (*hexutil.Big)(new(big.Int))},
+				BlobGasUsedRatio: []float64{0},
 			},
 			sdk.AccAddress(tests.GenerateAddress().Bytes()),
 			true,
@@ -536,4 +581,184 @@ func (suite *BackendTestSuite) TestFeeHistory() {
 			}
 		})
 	}
+}
+
+func (suite *BackendTestSuite) TestFeeHistoryRewardPercentileCap() {
+	suite.SetupTest()
+
+	// Build a valid (in-range, non-decreasing) percentile slice that exceeds
+	// the cap. It must be rejected purely on length, before any backend query.
+	percentiles := make([]float64, maxFeeHistoryRewardPercentiles+1)
+	for i := range percentiles {
+		percentiles[i] = 50
+	}
+
+	_, err := suite.backend.FeeHistory(1, ethrpc.BlockNumber(1), percentiles)
+	suite.Require().Error(err)
+	suite.Require().ErrorIs(err, errTooManyPercentiles)
+}
+
+func (suite *BackendTestSuite) TestNextBaseFee() {
+	suite.SetupTest()
+
+	const height = int64(1)
+	const (
+		gasLimit = int64(10)
+		gasUsed  = int64(6)
+	)
+
+	var header metadata.MD
+	queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
+	client := suite.backend.clientCtx.Client.(*mocks.Client)
+	feeMarketClient := suite.backend.queryClient.FeeMarket.(*mocks.FeeMarketQueryClient)
+	RegisterParams(queryClient, &header, height)
+	RegisterParamsWithoutHeader(queryClient, height)
+	RegisterBaseFee(queryClient, sdkmath.NewInt(1))
+	RegisterFeeMarketParams(feeMarketClient, height)
+
+	RegisterBlock(client, height, nil)
+	blockRes, _ := RegisterBlockResults(client, height)
+	blockRes.TxsResults[0].GasUsed = gasUsed
+	consensusParams := tmtypes.DefaultConsensusParams()
+	consensusParams.Block.MaxGas = gasLimit
+	client.On("ConsensusParams", rpc.ContextWithHeight(height), mock.AnythingOfType("*int64")).
+		Return(&tmrpctypes.ResultConsensusParams{ConsensusParams: *consensusParams}, nil)
+
+	baseFee, err := suite.backend.NextBaseFee()
+	suite.Require().NoError(err)
+	suite.Require().Equal(big.NewInt(2), baseFee)
+}
+
+func (suite *BackendTestSuite) TestCurrentHeader() {
+	validator := sdk.AccAddress(tests.GenerateAddress().Bytes())
+	baseFee := sdkmath.NewInt(1)
+	height := int64(1)
+
+	testCases := []struct {
+		name         string
+		registerMock func()
+		expPass      bool
+	}{
+		{
+			"fail - tendermint client failed to get block",
+			func() {
+				var header metadata.MD
+				queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
+				RegisterParams(queryClient, &header, height)
+				client := suite.backend.clientCtx.Client.(*mocks.Client)
+				RegisterBlockError(client, height)
+			},
+			false,
+		},
+		{
+			"fail - block not found",
+			func() {
+				var header metadata.MD
+				queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
+				RegisterParams(queryClient, &header, height)
+				client := suite.backend.clientCtx.Client.(*mocks.Client)
+				RegisterBlockNotFound(client, height)
+			},
+			false,
+		},
+		{
+			"fail - block results not found (e.g. discard_abci_responses)",
+			func() {
+				var header metadata.MD
+				queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
+				RegisterParams(queryClient, &header, height)
+				client := suite.backend.clientCtx.Client.(*mocks.Client)
+				RegisterBlock(client, height, nil)
+				RegisterBlockResultsError(client, height)
+			},
+			false,
+		},
+		{
+			"fail - validator account error",
+			func() {
+				var header metadata.MD
+				queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
+				RegisterParams(queryClient, &header, height)
+				RegisterBaseFee(queryClient, baseFee)
+				RegisterValidatorAccountError(queryClient)
+				client := suite.backend.clientCtx.Client.(*mocks.Client)
+				RegisterBlock(client, height, nil)
+				RegisterEmptyBlockResults(client, height)
+			},
+			false,
+		},
+		{
+			"pass - without Base Fee",
+			func() {
+				var header metadata.MD
+				queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
+				RegisterParams(queryClient, &header, height)
+				RegisterBaseFeeError(queryClient)
+				RegisterValidatorAccount(queryClient, validator)
+				client := suite.backend.clientCtx.Client.(*mocks.Client)
+				RegisterEmptyBlockResults(client, height)
+				RegisterBlock(client, height, nil)
+			},
+			true,
+		},
+		{
+			"pass - with Base Fee",
+			func() {
+				var header metadata.MD
+				queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
+				RegisterParams(queryClient, &header, height)
+				RegisterBaseFee(queryClient, baseFee)
+				RegisterValidatorAccount(queryClient, validator)
+				client := suite.backend.clientCtx.Client.(*mocks.Client)
+				RegisterEmptyBlockResults(client, height)
+				RegisterBlock(client, height, nil)
+			},
+			true,
+		},
+	}
+	for _, tc := range testCases {
+		suite.Run(fmt.Sprintf("Case %s", tc.name), func() {
+			suite.SetupTest()
+			tc.registerMock()
+
+			header, err := suite.backend.CurrentHeader()
+
+			if tc.expPass {
+				suite.Require().NoError(err)
+				suite.Require().NotNil(header)
+			} else {
+				suite.Require().Error(err)
+			}
+		})
+	}
+}
+
+func (suite *BackendTestSuite) TestProcessBlock() {
+	suite.SetupTest()
+
+	const height = int64(1)
+	gasLimit := hexutil.Uint64(8_000_000)
+	gasUsed := hexutil.Uint64(21_000)
+
+	ethBlock := map[string]interface{}{
+		"gasLimit":      gasLimit,
+		"gasUsed":       gasUsed,
+		"baseFeePerGas": (*hexutil.Big)(big.NewInt(1_000_000_000)),
+	}
+
+	tmBlock := &tmrpctypes.ResultBlock{
+		Block: &tmtypes.Block{Header: tmtypes.Header{Height: height}},
+	}
+	blockRes := &tmrpctypes.ResultBlockResults{Height: height}
+
+	queryClient := suite.backend.queryClient.QueryClient.(*mocks.EVMQueryClient)
+	RegisterBaseFeeError(queryClient)
+	RegisterParamsWithoutHeader(queryClient, height)
+	fQueryClient := suite.backend.queryClient.FeeMarket.(*mocks.FeeMarketQueryClient)
+	RegisterFeeMarketParams(fQueryClient, height)
+
+	var target rpc.OneFeeHistory
+	err := suite.backend.processBlock(tmBlock, &ethBlock, []float64{}, blockRes, &target)
+	suite.Require().NoError(err)
+	suite.Require().Equal(float64(gasUsed)/float64(gasLimit), target.GasUsedRatio)
 }

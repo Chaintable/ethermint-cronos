@@ -37,7 +37,7 @@ func RegisterTraceTransactionWithPredecessors(queryClient *mocks.EVMQueryClient,
 	data := []byte{0x7b, 0x22, 0x74, 0x65, 0x73, 0x74, 0x22, 0x3a, 0x20, 0x22, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x22, 0x7d}
 	queryClient.On("TraceTx", rpc.ContextWithHeight(1),
 		mock.MatchedBy(func(req *evmtypes.QueryTraceTxRequest) bool {
-			if req.BlockNumber != 1 {
+			if req.BlockNumber != 1 || req.BlockMaxGas != 60000000 {
 				return false
 			}
 			bytes, _ := json.Marshal(msgEthTx)
@@ -67,7 +67,7 @@ func RegisterTraceTransactionWithReplay(queryClient *mocks.EVMQueryClient, msgEt
 	data := []byte{0x7b, 0x22, 0x74, 0x65, 0x73, 0x74, 0x22, 0x3a, 0x20, 0x22, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x22, 0x7d}
 	queryClient.On("TraceTx", rpc.ContextWithHeight(1),
 		mock.MatchedBy(func(req *evmtypes.QueryTraceTxRequest) bool {
-			if req.BlockNumber != 1 {
+			if req.BlockNumber != 1 || req.BlockMaxGas != 60000000 {
 				return false
 			}
 			bytes, _ := json.Marshal(msgEthTx)
@@ -91,7 +91,7 @@ func RegisterTraceTransaction(queryClient *mocks.EVMQueryClient, msgEthTx *evmty
 	data := []byte{0x7b, 0x22, 0x74, 0x65, 0x73, 0x74, 0x22, 0x3a, 0x20, 0x22, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x22, 0x7d}
 	queryClient.On("TraceTx", rpc.ContextWithHeight(1),
 		mock.MatchedBy(func(req *evmtypes.QueryTraceTxRequest) bool {
-			if req.BlockNumber != 1 {
+			if req.BlockNumber != 1 || req.BlockMaxGas != 60000000 {
 				return false
 			}
 			bytes, _ := json.Marshal(msgEthTx)
@@ -117,7 +117,7 @@ func RegisterTraceBlock(queryClient *mocks.EVMQueryClient, txs []*evmtypes.MsgEt
 	data := []byte{0x7b, 0x22, 0x74, 0x65, 0x73, 0x74, 0x22, 0x3a, 0x20, 0x22, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x22, 0x7d}
 	queryClient.On("TraceBlock", rpc.ContextWithHeight(1),
 		mock.MatchedBy(func(req *evmtypes.QueryTraceBlockRequest) bool {
-			if req.BlockNumber != 1 {
+			if req.BlockNumber != 1 || req.BlockMaxGas != 60000000 {
 				return false
 			}
 			bytes, _ := json.Marshal(txs)
@@ -214,13 +214,13 @@ func TestRegisterParamsError(t *testing.T) {
 
 // ETH Call
 func RegisterEthCall(queryClient *mocks.EVMQueryClient, request *evmtypes.EthCallRequest) {
-	ctx, _ := context.WithCancel(rpc.ContextWithHeight(1))
+	ctx, _ := context.WithCancel(rpc.ContextWithHeight(1)) //nolint:govet
 	queryClient.On("EthCall", ctx, request).
 		Return(&evmtypes.EthCallResponse{}, nil)
 }
 
 func RegisterEthCallError(queryClient *mocks.EVMQueryClient, request *evmtypes.EthCallRequest) {
-	ctx, _ := context.WithCancel(rpc.ContextWithHeight(1))
+	ctx, _ := context.WithCancel(rpc.ContextWithHeight(1)) //nolint:govet
 	queryClient.On("EthCall", ctx, request).
 		Return(nil, errortypes.ErrInvalidRequest)
 }
@@ -357,6 +357,19 @@ func RegisterBalanceError(queryClient *mocks.EVMQueryClient, addr common.Address
 		Return(nil, errortypes.ErrInvalidRequest)
 }
 
+// CreateAccessList
+func RegisterCreateAccessList(queryClient *mocks.EVMQueryClient, request *evmtypes.EthCallRequest, data []byte) {
+	ctx, _ := context.WithCancel(rpc.ContextWithHeight(1)) //nolint:govet
+	queryClient.On("CreateAccessList", ctx, request).
+		Return(&evmtypes.CreateAccessListResponse{Data: data}, nil)
+}
+
+func RegisterCreateAccessListError(queryClient *mocks.EVMQueryClient, request *evmtypes.EthCallRequest) {
+	ctx, _ := context.WithCancel(rpc.ContextWithHeight(1)) //nolint:govet
+	queryClient.On("CreateAccessList", ctx, request).
+		Return(nil, errortypes.ErrInvalidRequest)
+}
+
 // TraceCall
 func RegisterTraceCall(queryClient *mocks.EVMQueryClient, request *evmtypes.QueryTraceCallRequest, response *evmtypes.QueryTraceCallResponse) {
 	queryClient.On("TraceCall", rpc.ContextWithHeight(request.BlockNumber), request).
@@ -364,7 +377,7 @@ func RegisterTraceCall(queryClient *mocks.EVMQueryClient, request *evmtypes.Quer
 }
 
 func RegisterTraceCallError(queryClient *mocks.EVMQueryClient, request *evmtypes.QueryTraceCallRequest) {
-	ctx, _ := context.WithCancel(rpc.ContextWithHeight(1))
+	ctx, _ := context.WithCancel(rpc.ContextWithHeight(1)) //nolint:govet
 	queryClient.On("TraceCall", ctx, request).
 		Return(nil, errortypes.ErrInvalidRequest)
 }

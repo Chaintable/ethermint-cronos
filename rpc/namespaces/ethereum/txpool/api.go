@@ -16,51 +16,151 @@
 package txpool
 
 import (
-	"cosmossdk.io/log"
+	"fmt"
+	"math/big"
+	"strconv"
 
+	"cosmossdk.io/log/v2"
+
+	"github.com/cosmos/cosmos-sdk/client"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 
+	"github.com/evmos/ethermint/appmempool"
 	"github.com/evmos/ethermint/rpc/types"
+	ethermint "github.com/evmos/ethermint/types"
+	evmtypes "github.com/evmos/ethermint/x/evm/types"
 )
 
-// PublicAPI offers and API for the transaction pool. It only operates on data that is non-confidential.
-// NOTE: For more info about the current status of this endpoints see https://github.com/evmos/ethermint/issues/124
+const (
+	pendingKey = "pending"
+	queuedKey  = "queued"
+)
+
+// PublicAPI offers the transaction pool API for non-confidential data.
 type PublicAPI struct {
-	logger log.Logger
+	logger        log.Logger
+	chainID       *big.Int
+	mempoolClient appmempool.MempoolClient
 }
 
-// NewPublicAPI creates a new tx pool service that gives information about the transaction pool.
-func NewPublicAPI(logger log.Logger) *PublicAPI {
+// NewPublicAPI creates the txpool service. A nil mempoolClient reports empty pools.
+func NewPublicAPI(logger log.Logger, clientCtx client.Context, mempoolClient appmempool.MempoolClient) *PublicAPI {
+	chainID, err := ethermint.ParseChainID(clientCtx.ChainID)
+	if err != nil {
+		panic(err)
+	}
 	return &PublicAPI{
-		logger: logger.With("module", "txpool"),
+		logger:        logger.With("module", "txpool"),
+		chainID:       chainID,
+		mempoolClient: mempoolClient,
 	}
 }
 
-// Content returns the transactions contained within the transaction pool
+// pending returns EVM txs that pass keep, keyed by sender → nonce.
+// Note: pending/queued split is not supported; all txs are treated as pending.
+// Nil keep includes all senders.
+func (api *PublicAPI) pending(keep func(common.Address) bool) map[common.Address]map[uint64]*types.RPCTransaction {
+	byAddr := make(map[common.Address]map[uint64]*types.RPCTransaction)
+	if api.mempoolClient == nil {
+		return byAddr
+	}
+	for _, sdkTx := range api.mempoolClient.PendingTxs() {
+		for _, msg := range sdkTx.GetMsgs() {
+			ethMsg, ok := msg.(*evmtypes.MsgEthereumTx)
+			if !ok {
+				continue
+			}
+			rpcTx, err := types.NewRPCTransaction(ethMsg, common.Hash{}, 0, 0, 0, nil, api.chainID)
+			if err != nil {
+				api.logger.Debug("failed to convert pending tx", "error", err.Error())
+				continue
+			}
+			// Filter using the sender from the converted RPC tx to ensure consistency.
+			if keep != nil && !keep(rpcTx.From) {
+				continue
+			}
+			if byAddr[rpcTx.From] == nil {
+				byAddr[rpcTx.From] = make(map[uint64]*types.RPCTransaction)
+			}
+			byAddr[rpcTx.From][uint64(rpcTx.Nonce)] = rpcTx
+		}
+	}
+	return byAddr
+}
+
+// dumpNonce renders a sender's pending txs into a map keyed by decimal nonce.
+func dumpNonce[T any](txs map[uint64]*types.RPCTransaction, convert func(*types.RPCTransaction) T) map[string]T {
+	dump := make(map[string]T, len(txs))
+	for nonce, tx := range txs {
+		dump[strconv.FormatUint(nonce, 10)] = convert(tx)
+	}
+	return dump
+}
+
+// dumpByAddr renders every sender's pending txs, keyed by address then nonce.
+func dumpByAddr[T any](byAddr map[common.Address]map[uint64]*types.RPCTransaction, convert func(*types.RPCTransaction) T) map[string]map[string]T {
+	dump := make(map[string]map[string]T, len(byAddr))
+	for addr, txs := range byAddr {
+		dump[addr.Hex()] = dumpNonce(txs, convert)
+	}
+	return dump
+}
+
+func identityRPCTransaction(tx *types.RPCTransaction) *types.RPCTransaction { return tx }
+
+// Content returns pool transactions. All txs are reported as pending;
+// pending/queued split is not supported.
 func (api *PublicAPI) Content() (map[string]map[string]map[string]*types.RPCTransaction, error) {
 	api.logger.Debug("txpool_content")
-	content := map[string]map[string]map[string]*types.RPCTransaction{
-		"pending": make(map[string]map[string]*types.RPCTransaction),
-		"queued":  make(map[string]map[string]*types.RPCTransaction),
-	}
-	return content, nil
+	pending := dumpByAddr(api.pending(nil), identityRPCTransaction)
+	return map[string]map[string]map[string]*types.RPCTransaction{
+		pendingKey: pending,
+		queuedKey:  make(map[string]map[string]*types.RPCTransaction),
+	}, nil
 }
 
-// Inspect returns the content of the transaction pool and flattens it into an
+// ContentFrom returns pending and queued transactions for the given address.
+func (api *PublicAPI) ContentFrom(address common.Address) (map[string]map[string]*types.RPCTransaction, error) {
+	api.logger.Debug("txpool_contentFrom", "address", address.Hex())
+	fromSender := api.pending(func(a common.Address) bool { return a == address })
+	pending := dumpNonce(fromSender[address], identityRPCTransaction)
+	return map[string]map[string]*types.RPCTransaction{
+		pendingKey: pending,
+		queuedKey:  make(map[string]*types.RPCTransaction),
+	}, nil
+}
+
+// Inspect returns a textual summary of pending and queued transactions.
 func (api *PublicAPI) Inspect() (map[string]map[string]map[string]string, error) {
 	api.logger.Debug("txpool_inspect")
-	content := map[string]map[string]map[string]string{
-		"pending": make(map[string]map[string]string),
-		"queued":  make(map[string]map[string]string),
-	}
-	return content, nil
+	pending := dumpByAddr(api.pending(nil), inspectFormat)
+	return map[string]map[string]map[string]string{
+		pendingKey: pending,
+		queuedKey:  make(map[string]map[string]string),
+	}, nil
 }
 
-// Status returns the number of pending and queued transaction in the pool.
+// Status returns pending and queued transaction counts.
 func (api *PublicAPI) Status() map[string]hexutil.Uint {
 	api.logger.Debug("txpool_status")
-	return map[string]hexutil.Uint{
-		"pending": hexutil.Uint(0),
-		"queued":  hexutil.Uint(0),
+	var count int
+	if api.mempoolClient != nil {
+		count = api.mempoolClient.CountTx()
 	}
+	return map[string]hexutil.Uint{
+		pendingKey: hexutil.Uint(count), //#nosec G115 -- count is a non-negative count
+		queuedKey:  hexutil.Uint(0),
+	}
+}
+
+// inspectFormat renders a tx as "to: value wei + gas gas × gasPrice wei"
+// (txpool_inspect format). GasPrice is always set by NewRPCTransaction for pending txs.
+func inspectFormat(tx *types.RPCTransaction) string {
+	to := "contract creation"
+	if tx.To != nil {
+		to = tx.To.Hex()
+	}
+	return fmt.Sprintf("%s: %v wei + %v gas × %v wei",
+		to, tx.Value.ToInt(), uint64(tx.Gas), tx.GasPrice.ToInt())
 }

@@ -6,8 +6,8 @@ import (
 	"sort"
 	"sync"
 
-	iavlstore "cosmossdk.io/store/iavl"
 	sdkcodec "github.com/cosmos/cosmos-sdk/codec"
+	iavlstore "github.com/cosmos/cosmos-sdk/store/v2/iavl"
 	"github.com/cosmos/iavl"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"

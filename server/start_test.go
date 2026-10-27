@@ -1,12 +1,12 @@
 package server
 
 import (
-	"io"
 	"testing"
 
-	"cosmossdk.io/log"
+	"cosmossdk.io/log/v2"
 	dbm "github.com/cosmos/cosmos-db"
 	"github.com/cosmos/cosmos-sdk/server/types"
+	"github.com/evmos/ethermint/appmempool"
 	"github.com/evmos/ethermint/evmd/ante"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +20,9 @@ func (m *mockApplication) RegisterPendingTxListener(listener ante.PendingTxListe
 	m.pendingTxListeners = append(m.pendingTxListeners, listener)
 }
 
-func mockAppCreator(logger log.Logger, db dbm.DB, writer io.Writer, opts types.AppOptions) AppWithPendingTxListener {
+func (m *mockApplication) MempoolClient() appmempool.MempoolClient { return nil }
+
+func mockAppCreator(logger log.Logger, db dbm.DB, opts types.AppOptions) AppWithPendingTxListener {
 	return &mockApplication{}
 }
 
@@ -35,10 +37,9 @@ func TestNewDefaultStartOptions(t *testing.T) {
 
 	logger := log.NewNopLogger()
 	db := dbm.NewMemDB()
-	var writer io.Writer
 	var appOpts types.AppOptions
 
-	app := opts.AppCreator(logger, db, writer, appOpts)
+	app := opts.AppCreator(logger, db, appOpts)
 	require.NotNil(t, app)
 
 }

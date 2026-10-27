@@ -30,7 +30,9 @@ import (
 	rpcclient "github.com/cometbft/cometbft/rpc/client"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/server"
+	"github.com/cosmos/cosmos-sdk/server/types"
 	ethrpc "github.com/ethereum/go-ethereum/rpc"
+	"github.com/evmos/ethermint/appmempool"
 	"github.com/evmos/ethermint/debank/statediff"
 	"github.com/evmos/ethermint/evmd/ante"
 	"github.com/evmos/ethermint/rpc"
@@ -42,8 +44,14 @@ import (
 
 const ServerStartTime = 5 * time.Second
 
-type PendingTxListener interface {
+// serverShutdownTimeout bounds graceful shutdown so a stuck connection can't block it forever.
+const serverShutdownTimeout = 5 * time.Second
+
+// AppServices is the interface apps must implement to wire the JSON-RPC server.
+// MempoolClient returns nil for apps that don't use direct mempool insertion.
+type AppServices interface {
 	RegisterPendingTxListener(listener ante.PendingTxListener)
+	MempoolClient() appmempool.MempoolClient
 }
 
 // StartJSONRPC starts the JSON-RPC server
@@ -54,7 +62,7 @@ func StartJSONRPC(
 	g *errgroup.Group,
 	config *config.Config,
 	indexer ethermint.EVMTxIndexer,
-	app AppWithPendingTxListener,
+	app AppServices,
 	abciMtx sync.Locker,
 ) (*http.Server, error) {
 	logger := srvCtx.Logger.With("module", "geth")
@@ -79,14 +87,18 @@ func StartJSONRPC(
 	rpcAPIArr := config.JSONRPC.API
 	var stateSource statediff.StateChangeSource
 	if namespaceEnabled(rpcAPIArr, rpc.TraceNamespace) {
-		resolved, err := resolveStateChangeSource(app, clientCtx.Codec, abciMtx)
+		stateApp, ok := app.(types.Application)
+		if !ok {
+			return nil, fmt.Errorf("trace namespace requires a store application, got %T", app)
+		}
+		resolved, err := resolveStateChangeSource(stateApp, clientCtx.Codec, abciMtx)
 		if err != nil {
 			return nil, err
 		}
 		stateSource = resolved
 	}
 
-	apis := rpc.GetRPCAPIs(srvCtx, clientCtx, rpcStream, allowUnprotectedTxs, indexer, rpcAPIArr, stateSource)
+	apis := rpc.GetRPCAPIsWithMempool(srvCtx, clientCtx, rpcStream, allowUnprotectedTxs, indexer, rpcAPIArr, app.MempoolClient(), stateSource)
 
 	for _, api := range apis {
 		if err := rpcServer.RegisterName(api.Namespace, api.Service); err != nil {
@@ -102,20 +114,18 @@ func StartJSONRPC(
 	r := mux.NewRouter()
 	r.HandleFunc("/", rpcServer.ServeHTTP).Methods("POST")
 
-	handlerWithCors := cors.Default()
-	if config.API.EnableUnsafeCORS {
-		handlerWithCors = cors.AllowAll()
-	}
+	// config.API.EnableUnsafeCORS is shared with the REST API server, so it governs
+	// CORS for both; they can't be toggled independently.
+	rpcHandler := corsHandler(r, config.API.EnableUnsafeCORS)
 
 	httpSrv := &http.Server{
 		Addr:              config.JSONRPC.Address,
-		Handler:           handlerWithCors.Handler(r),
+		Handler:           rpcHandler,
 		ReadHeaderTimeout: config.JSONRPC.HTTPTimeout,
 		ReadTimeout:       config.JSONRPC.HTTPTimeout,
 		WriteTimeout:      config.JSONRPC.HTTPTimeout,
 		IdleTimeout:       config.JSONRPC.HTTPIdleTimeout,
 	}
-	httpSrvDone := make(chan struct{}, 1)
 
 	ln, err := Listen(httpSrv.Addr, config)
 	if err != nil {
@@ -124,9 +134,15 @@ func StartJSONRPC(
 
 	g.Go(func() error {
 		srvCtx.Logger.Info("Starting JSON-RPC server", "address", config.JSONRPC.Address)
-		errCh := make(chan error)
+		// buffered so the serve goroutine can always send, even if we've already left via ctx.Done()
+		errCh := make(chan error, 1)
+		serveTLS := config.TLS.CertificatePath != "" && config.TLS.KeyPath != ""
 		go func() {
-			errCh <- httpSrv.Serve(ln)
+			if serveTLS {
+				errCh <- httpSrv.ServeTLS(ln, config.TLS.CertificatePath, config.TLS.KeyPath)
+			} else {
+				errCh <- httpSrv.Serve(ln)
+			}
 		}()
 
 		// Start a blocking select to wait for an indication to stop the server or that
@@ -136,16 +152,17 @@ func StartJSONRPC(
 			// The calling process canceled or closed the provided context, so we must
 			// gracefully stop the JSON-RPC server.
 			logger.Info("stopping JSON-RPC server...", "address", config.JSONRPC.Address)
-			if err := httpSrv.Shutdown(context.Background()); err != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+			defer cancel()
+			if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 				logger.Error("failed to shutdown JSON-RPC server", "error", err.Error())
 			}
 			return nil
 
 		case err := <-errCh:
-			if err == http.ErrServerClosed {
-				close(httpSrvDone)
+			if err == nil || err == http.ErrServerClosed {
+				return nil
 			}
-
 			srvCtx.Logger.Error("failed to start JSON-RPC server", "error", err.Error())
 			return err
 		}
@@ -154,6 +171,35 @@ func StartJSONRPC(
 	srvCtx.Logger.Info("Starting JSON WebSocket server", "address", config.JSONRPC.WsAddress)
 
 	wsSrv := rpc.NewWebsocketsServer(ctx, clientCtx, srvCtx.Logger, rpcStream, config)
-	wsSrv.Start()
+	if err := wsSrv.Start(); err != nil {
+		// stop the HTTP server started above, otherwise its goroutine and port leak
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		defer cancel()
+		if shutdownErr := httpSrv.Shutdown(shutdownCtx); shutdownErr != nil {
+			srvCtx.Logger.Error("failed to shutdown JSON-RPC server after WS start failure", "error", shutdownErr.Error())
+		}
+		return nil, err
+	}
+
+	// shut the WS server down on context cancellation, mirroring the HTTP server above
+	g.Go(func() error {
+		<-ctx.Done()
+		srvCtx.Logger.Info("stopping JSON WebSocket server...", "address", config.JSONRPC.WsAddress)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
+		defer cancel()
+		if err := wsSrv.Stop(shutdownCtx); err != nil {
+			srvCtx.Logger.Error("failed to shutdown JSON WebSocket server", "error", err.Error())
+		}
+		return nil
+	})
+
 	return httpSrv, nil
+}
+
+// corsHandler enables permissive CORS only when opted in, otherwise no CORS headers are set.
+func corsHandler(r http.Handler, enableUnsafeCORS bool) http.Handler {
+	if enableUnsafeCORS {
+		return cors.AllowAll().Handler(r)
+	}
+	return r
 }

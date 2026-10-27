@@ -18,14 +18,17 @@ package rpc
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/gorilla/mux"
@@ -38,7 +41,7 @@ import (
 	"github.com/ethereum/go-ethereum/eth/filters"
 	"github.com/ethereum/go-ethereum/rpc"
 
-	"cosmossdk.io/log"
+	"cosmossdk.io/log/v2"
 
 	originutil "github.com/evmos/ethermint/internal/origin"
 	rpcfilters "github.com/evmos/ethermint/rpc/namespaces/ethereum/eth/filters"
@@ -51,8 +54,15 @@ const (
 	methodEthUnsubscribe = "eth_unsubscribe"
 )
 
+// maxSubscriptionsPerConn bounds the number of concurrently active
+// eth_subscribe subscriptions on a single WebSocket connection. Each
+// subscription holds a per-connection entry and a streaming goroutine
+const maxSubscriptionsPerConn = 500
+
 type WebsocketsServer interface {
-	Start()
+	Start() error
+	// Stop gracefully shuts the server down, respecting the context deadline.
+	Stop(ctx context.Context) error
 }
 
 type SubscriptionResponseJSON struct {
@@ -90,6 +100,9 @@ type websocketsServer struct {
 	keyFile  string
 	api      *pubSubAPI
 	logger   log.Logger
+	httpSrv  *http.Server
+
+	readHeaderTimeout time.Duration
 
 	wsOriginAllowAll bool
 	wsOrigins        map[string]struct{}
@@ -107,38 +120,68 @@ func NewWebsocketsServer(
 		// starting with a partial or empty allowlist.
 		panic(fmt.Sprintf("invalid websocket origin allowlist: %v", errs))
 	}
+
 	return &websocketsServer{
-		rpcAddr:          cfg.JSONRPC.Address,
-		wsAddr:           cfg.JSONRPC.WsAddress,
-		certFile:         cfg.TLS.CertificatePath,
-		keyFile:          cfg.TLS.KeyPath,
-		api:              newPubSubAPI(ctx, clientCtx, logger, stream),
-		logger:           logger,
-		wsOriginAllowAll: allowAll,
-		wsOrigins:        origins,
-		allowedAPIs:      buildAllowedAPIs(cfg.JSONRPC.API),
+		rpcAddr:           cfg.JSONRPC.Address,
+		wsAddr:            cfg.JSONRPC.WsAddress,
+		certFile:          cfg.TLS.CertificatePath,
+		keyFile:           cfg.TLS.KeyPath,
+		api:               newPubSubAPI(ctx, clientCtx, logger, stream),
+		logger:            logger,
+		readHeaderTimeout: cfg.JSONRPC.HTTPTimeout,
+		wsOriginAllowAll:  allowAll,
+		wsOrigins:         origins,
+		allowedAPIs:       buildAllowedAPIs(cfg.JSONRPC.API),
 	}
 }
 
-func (s *websocketsServer) Start() {
+func (s *websocketsServer) Start() error {
 	ws := mux.NewRouter()
 	ws.Handle("/", s)
 
+	// bind synchronously so a startup failure reaches the caller instead of a log line
+	ln, err := net.Listen("tcp", s.wsAddr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s for WS: %w", s.wsAddr, err)
+	}
+
+	s.httpSrv = &http.Server{Handler: ws, ReadHeaderTimeout: s.readHeaderTimeout}
+
+	serveTLS := s.certFile != "" && s.keyFile != ""
+	if serveTLS {
+		// load the keypair here so a bad cert/key surfaces to the caller, not the goroutine
+		cert, err := tls.LoadX509KeyPair(s.certFile, s.keyFile)
+		if err != nil {
+			_ = ln.Close()
+			return fmt.Errorf("failed to load WS TLS keypair: %w", err)
+		}
+		s.httpSrv.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+	}
+
 	go func() {
 		var err error
-		if s.certFile == "" || s.keyFile == "" {
-			err = http.ListenAndServe(s.wsAddr, ws) // #nosec G114 -- http functions have no support for timeouts
+		if serveTLS {
+			err = s.httpSrv.ServeTLS(ln, "", "") // certs already in TLSConfig
 		} else {
-			err = http.ListenAndServeTLS(s.wsAddr, s.certFile, s.keyFile, ws) // #nosec G114 -- http functions have no support for timeouts
+			err = s.httpSrv.Serve(ln)
 		}
-		if err != nil {
-			if err == http.ErrServerClosed {
-				return
-			}
-
-			s.logger.Error("failed to start HTTP server for WS", "error", err.Error())
+		// both are expected on shutdown, not real errors
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			s.logger.Error("failed to serve WS", "error", err.Error())
 		}
 	}()
+	return nil
+}
+
+// Stop is safe to call before Start (no-op) or after the server has stopped.
+func (s *websocketsServer) Stop(ctx context.Context) error {
+	if s.httpSrv == nil {
+		return nil
+	}
+	return s.httpSrv.Shutdown(ctx)
 }
 
 func (s *websocketsServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -290,6 +333,12 @@ func (s *websocketsServer) readLoop(wsConn *wsConn) {
 		case methodEthSubscribe:
 			params, ok := s.getParamsAndCheckValid(msg, wsConn)
 			if !ok {
+				continue
+			}
+
+			if len(subscriptions) >= maxSubscriptionsPerConn {
+				s.sendErrResponseWithID(wsConn, connID, fmt.Sprintf(
+					"subscription limit reached: max %d active subscriptions per connection", maxSubscriptionsPerConn))
 				continue
 			}
 
@@ -512,21 +561,25 @@ type Header struct {
 	ParentHash common.Hash `json:"parentHash"       gencodec:"required"`
 	UncleHash  common.Hash `json:"sha3Uncles"       gencodec:"required"`
 	// update string avoid lost checksumed miner after MarshalText
-	Coinbase        string              `json:"miner"`
-	Root            common.Hash         `json:"stateRoot"        gencodec:"required"`
-	TxHash          common.Hash         `json:"transactionsRoot" gencodec:"required"`
-	ReceiptHash     common.Hash         `json:"receiptsRoot"     gencodec:"required"`
-	Bloom           ethtypes.Bloom      `json:"logsBloom"        gencodec:"required"`
-	Difficulty      *hexutil.Big        `json:"difficulty"       gencodec:"required"`
-	Number          *hexutil.Big        `json:"number"           gencodec:"required"`
-	GasLimit        hexutil.Uint64      `json:"gasLimit"         gencodec:"required"`
-	GasUsed         hexutil.Uint64      `json:"gasUsed"          gencodec:"required"`
-	Time            hexutil.Uint64      `json:"timestamp"        gencodec:"required"`
-	Extra           hexutil.Bytes       `json:"extraData"        gencodec:"required"`
-	MixDigest       common.Hash         `json:"mixHash"`
-	Nonce           ethtypes.BlockNonce `json:"nonce"`
-	BaseFee         *hexutil.Big        `json:"baseFeePerGas" rlp:"optional"`
-	WithdrawalsHash *common.Hash        `json:"withdrawalsRoot" rlp:"optional"`
+	Coinbase         string              `json:"miner"`
+	Root             common.Hash         `json:"stateRoot"        gencodec:"required"`
+	TxHash           common.Hash         `json:"transactionsRoot" gencodec:"required"`
+	ReceiptHash      common.Hash         `json:"receiptsRoot"     gencodec:"required"`
+	Bloom            ethtypes.Bloom      `json:"logsBloom"        gencodec:"required"`
+	Difficulty       *hexutil.Big        `json:"difficulty"       gencodec:"required"`
+	Number           *hexutil.Big        `json:"number"           gencodec:"required"`
+	GasLimit         hexutil.Uint64      `json:"gasLimit"         gencodec:"required"`
+	GasUsed          hexutil.Uint64      `json:"gasUsed"          gencodec:"required"`
+	Time             hexutil.Uint64      `json:"timestamp"        gencodec:"required"`
+	Extra            hexutil.Bytes       `json:"extraData"        gencodec:"required"`
+	MixDigest        common.Hash         `json:"mixHash"`
+	Nonce            ethtypes.BlockNonce `json:"nonce"`
+	BaseFee          *hexutil.Big        `json:"baseFeePerGas" rlp:"optional"`
+	WithdrawalsHash  *common.Hash        `json:"withdrawalsRoot,omitempty" rlp:"optional"`
+	BlobGasUsed      *hexutil.Uint64     `json:"blobGasUsed,omitempty" rlp:"optional"`
+	ExcessBlobGas    *hexutil.Uint64     `json:"excessBlobGas,omitempty" rlp:"optional"`
+	ParentBeaconRoot *common.Hash        `json:"parentBeaconBlockRoot,omitempty" rlp:"optional"`
+	RequestsHash     *common.Hash        `json:"requestsHash,omitempty" rlp:"optional"`
 	// overwrite rlpHash
 	Hash common.Hash `json:"hash"`
 }
@@ -556,6 +609,16 @@ func (api *pubSubAPI) subscribeNewHeads(wsConn *wsConn, subID rpc.ID) (context.C
 			enc.Nonce = h.Nonce
 			enc.BaseFee = (*hexutil.Big)(h.BaseFee)
 			enc.WithdrawalsHash = h.WithdrawalsHash
+			if h.BlobGasUsed != nil {
+				bgu := hexutil.Uint64(*h.BlobGasUsed)
+				enc.BlobGasUsed = &bgu
+			}
+			if h.ExcessBlobGas != nil {
+				ebg := hexutil.Uint64(*h.ExcessBlobGas)
+				enc.ExcessBlobGas = &ebg
+			}
+			enc.ParentBeaconRoot = h.ParentBeaconRoot
+			enc.RequestsHash = h.RequestsHash
 			enc.Hash = header.Hash
 			// write to ws conn
 			res := &SubscriptionNotification{

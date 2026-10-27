@@ -17,7 +17,6 @@ package tx
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/codec"
@@ -97,12 +96,9 @@ func PrepareEIP712CosmosTx(
 	}
 	chainIDNum := pc.Uint64()
 
-	fmt.Println("args ", txArgs.Priv)
 	from := sdk.AccAddress(txArgs.Priv.PubKey().Address().Bytes())
-	fmt.Println("from ", from)
 	acc := appEthermint.AccountKeeper.GetAccount(ctx, from)
 
-	fmt.Println("acc: ", acc)
 	accNumber := acc.GetAccountNumber()
 
 	nonce, err := appEthermint.AccountKeeper.GetSequence(ctx, from)
@@ -110,10 +106,10 @@ func PrepareEIP712CosmosTx(
 		return nil, err
 	}
 
-	fee := legacytx.NewStdFee(txArgs.Gas, txArgs.Fees) //nolint: staticcheck
+	fee := legacytx.NewStdFee(txArgs.Gas, txArgs.Fees) //nolint:staticcheck
 
 	msgs := txArgs.Msgs
-	data := legacytx.StdSignBytes(ctx.ChainID(), accNumber, nonce, 0, fee, msgs, "")
+	data := legacytx.StdSignBytes(ctx.ChainID(), accNumber, nonce, txArgs.TimeoutHeight, fee, msgs, "") //nolint:staticcheck
 
 	typedDataArgs := typedDataArgs{
 		chainID:        chainIDNum,
@@ -135,6 +131,7 @@ func PrepareEIP712CosmosTx(
 
 	builder.SetFeeAmount(fee.Amount)
 	builder.SetGasLimit(txArgs.Gas)
+	builder.SetTimeoutHeight(txArgs.TimeoutHeight)
 
 	err = builder.SetMsgs(txArgs.Msgs...)
 	if err != nil {

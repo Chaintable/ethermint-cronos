@@ -20,11 +20,12 @@ import (
 	"math/big"
 
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/rs/zerolog"
 
 	errorsmod "cosmossdk.io/errors"
-	"cosmossdk.io/log"
-	storetypes "cosmossdk.io/store/types"
+	"cosmossdk.io/log/v2"
 	"github.com/cosmos/cosmos-sdk/codec"
+	storetypes "github.com/cosmos/cosmos-sdk/store/v2/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	paramstypes "github.com/cosmos/cosmos-sdk/x/params/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -133,6 +134,23 @@ func (k Keeper) Logger(ctx sdk.Context) log.Logger {
 	return sdkCtx.Logger().With("module", "x/"+types.ModuleName)
 }
 
+// debugLogger returns a module logger only when debug level is enabled.
+// Returns nil if debug logging is disabled, avoiding allocations in the common case.
+func (k Keeper) debugLogger(ctx sdk.Context) log.Logger {
+	baseLogger := sdk.UnwrapSDKContext(ctx).Logger()
+	if zl, ok := baseLogger.Impl().(*zerolog.Logger); ok && zl.GetLevel() > zerolog.DebugLevel {
+		return nil
+	}
+	return baseLogger.With("module", "x/"+types.ModuleName)
+}
+
+// debugLog logs only when debug level is enabled.
+func (k Keeper) debugLog(ctx sdk.Context, msg string, keyVals ...interface{}) {
+	if dl := k.debugLogger(ctx); dl != nil {
+		dl.Debug(msg, keyVals...)
+	}
+}
+
 // WithChainID sets the chain ID for the keeper by extracting it from the provided context
 func (k *Keeper) WithChainID(ctx sdk.Context) {
 	k.WithChainIDString(ctx.ChainID())
@@ -145,8 +163,14 @@ func (k *Keeper) WithChainIDString(value string) {
 		panic(err)
 	}
 
-	if k.eip155ChainID != nil && k.eip155ChainID.Cmp(chainID) != 0 {
-		panic("chain id already set")
+	if k.eip155ChainID != nil {
+		// Chain ID is immutable once set. Reject a genuine change, but skip
+		// rewriting the same value so concurrent lock-free readers don't
+		// race the assignment.
+		if k.eip155ChainID.Cmp(chainID) != 0 {
+			panic("chain id already set")
+		}
+		return
 	}
 
 	k.eip155ChainID = chainID

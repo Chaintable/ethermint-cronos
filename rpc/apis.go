@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/rpc"
 
+	"github.com/evmos/ethermint/appmempool"
 	"github.com/evmos/ethermint/debank/statediff"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/debug"
@@ -56,7 +57,8 @@ const (
 	apiVersion = "1.0"
 )
 
-// APICreator creates the JSON-RPC API implementations.
+// APICreator creates the JSON-RPC API implementations. Public extension point
+// for RegisterAPINamespace; signature is stable for downstream apps.
 type APICreator = func(
 	ctx *server.Context,
 	clientCtx client.Context,
@@ -65,18 +67,30 @@ type APICreator = func(
 	indexer ethermint.EVMTxIndexer,
 ) []rpc.API
 
+// apiCreator is the internal variant that takes the app mempool client,
+// avoiding package-global state.
+type apiCreator = func(
+	ctx *server.Context,
+	clientCtx client.Context,
+	stream *stream.RPCStream,
+	allowUnprotectedTxs bool,
+	indexer ethermint.EVMTxIndexer,
+	client appmempool.MempoolClient,
+) []rpc.API
+
 // apiCreators defines the JSON-RPC API namespaces.
-var apiCreators map[string]APICreator
+var apiCreators map[string]apiCreator
 
 func init() {
-	apiCreators = map[string]APICreator{
+	apiCreators = map[string]apiCreator{
 		EthNamespace: func(ctx *server.Context,
 			clientCtx client.Context,
 			stream *stream.RPCStream,
 			allowUnprotectedTxs bool,
 			indexer ethermint.EVMTxIndexer,
+			mempoolClient appmempool.MempoolClient,
 		) []rpc.API {
-			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer)
+			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer, backend.WithMempoolClient(mempoolClient))
 			return []rpc.API{
 				{
 					Namespace: EthNamespace,
@@ -92,7 +106,7 @@ func init() {
 				},
 			}
 		},
-		Web3Namespace: func(*server.Context, client.Context, *stream.RPCStream, bool, ethermint.EVMTxIndexer) []rpc.API {
+		Web3Namespace: func(*server.Context, client.Context, *stream.RPCStream, bool, ethermint.EVMTxIndexer, appmempool.MempoolClient) []rpc.API {
 			return []rpc.API{
 				{
 					Namespace: Web3Namespace,
@@ -102,7 +116,9 @@ func init() {
 				},
 			}
 		},
-		NetNamespace: func(_ *server.Context, clientCtx client.Context, _ *stream.RPCStream, _ bool, _ ethermint.EVMTxIndexer) []rpc.API {
+		NetNamespace: func(_ *server.Context, clientCtx client.Context, _ *stream.RPCStream,
+			_ bool, _ ethermint.EVMTxIndexer, _ appmempool.MempoolClient,
+		) []rpc.API {
 			return []rpc.API{
 				{
 					Namespace: NetNamespace,
@@ -117,8 +133,9 @@ func init() {
 			_ *stream.RPCStream,
 			allowUnprotectedTxs bool,
 			indexer ethermint.EVMTxIndexer,
+			mempoolClient appmempool.MempoolClient,
 		) []rpc.API {
-			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer)
+			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer, backend.WithMempoolClient(mempoolClient))
 			return []rpc.API{
 				{
 					Namespace: PersonalNamespace,
@@ -128,12 +145,18 @@ func init() {
 				},
 			}
 		},
-		TxPoolNamespace: func(ctx *server.Context, _ client.Context, _ *stream.RPCStream, _ bool, _ ethermint.EVMTxIndexer) []rpc.API {
+		TxPoolNamespace: func(ctx *server.Context,
+			clientCtx client.Context,
+			_ *stream.RPCStream,
+			_ bool,
+			_ ethermint.EVMTxIndexer,
+			mempoolClient appmempool.MempoolClient,
+		) []rpc.API {
 			return []rpc.API{
 				{
 					Namespace: TxPoolNamespace,
 					Version:   apiVersion,
-					Service:   txpool.NewPublicAPI(ctx.Logger),
+					Service:   txpool.NewPublicAPI(ctx.Logger, clientCtx, mempoolClient),
 					Public:    true,
 				},
 			}
@@ -143,8 +166,9 @@ func init() {
 			_ *stream.RPCStream,
 			allowUnprotectedTxs bool,
 			indexer ethermint.EVMTxIndexer,
+			mempoolClient appmempool.MempoolClient,
 		) []rpc.API {
-			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer)
+			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer, backend.WithMempoolClient(mempoolClient))
 			return []rpc.API{
 				{
 					Namespace: DebugNamespace,
@@ -157,13 +181,15 @@ func init() {
 	}
 }
 
-// GetRPCAPIs returns the list of all APIs
-func GetRPCAPIs(ctx *server.Context,
+// GetRPCAPIsWithMempool returns the selected APIs wired to the app mempool
+// client; a nil client falls back to CometBFT BroadcastTx.
+func GetRPCAPIsWithMempool(ctx *server.Context,
 	clientCtx client.Context,
 	stream *stream.RPCStream,
 	allowUnprotectedTxs bool,
 	indexer ethermint.EVMTxIndexer,
 	selectedAPIs []string,
+	client appmempool.MempoolClient,
 	stateSource statediff.StateChangeSource,
 ) []rpc.API {
 	var apis []rpc.API
@@ -180,7 +206,7 @@ func GetRPCAPIs(ctx *server.Context,
 			continue
 		}
 		if creator, ok := apiCreators[ns]; ok {
-			apis = append(apis, creator(ctx, clientCtx, stream, allowUnprotectedTxs, indexer)...)
+			apis = append(apis, creator(ctx, clientCtx, stream, allowUnprotectedTxs, indexer, client)...)
 		} else {
 			ctx.Logger.Error("invalid namespace value", "namespace", ns)
 		}
@@ -189,8 +215,7 @@ func GetRPCAPIs(ctx *server.Context,
 	return apis
 }
 
-// RegisterAPINamespace registers a new API namespace with the API creator.
-// This function fails if the namespace is already registered.
+// RegisterAPINamespace registers a new API namespace; fails if already registered.
 func RegisterAPINamespace(ns string, creator APICreator) error {
 	if ns == TraceNamespace {
 		return fmt.Errorf("duplicated api namespace %s", ns)
@@ -198,6 +223,15 @@ func RegisterAPINamespace(ns string, creator APICreator) error {
 	if _, ok := apiCreators[ns]; ok {
 		return fmt.Errorf("duplicated api namespace %s", ns)
 	}
-	apiCreators[ns] = creator
+	// Custom namespaces don't take a mempool client; ignore it.
+	apiCreators[ns] = func(ctx *server.Context,
+		clientCtx client.Context,
+		stream *stream.RPCStream,
+		allowUnprotectedTxs bool,
+		indexer ethermint.EVMTxIndexer,
+		_ appmempool.MempoolClient,
+	) []rpc.API {
+		return creator(ctx, clientCtx, stream, allowUnprotectedTxs, indexer)
+	}
 	return nil
 }

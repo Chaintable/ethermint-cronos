@@ -19,7 +19,6 @@ import (
 	"fmt"
 
 	errorsmod "cosmossdk.io/errors"
-	txsigning "cosmossdk.io/x/tx/signing"
 	"github.com/cosmos/cosmos-sdk/codec"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
@@ -29,6 +28,7 @@ import (
 	authante "github.com/cosmos/cosmos-sdk/x/auth/ante"
 	"github.com/cosmos/cosmos-sdk/x/auth/migrations/legacytx"
 	authsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
+	txsigning "github.com/cosmos/cosmos-sdk/x/tx/signing"
 	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/signer/core/apitypes"
 	"github.com/evmos/ethermint/crypto/ethsecp256k1"
@@ -38,7 +38,7 @@ import (
 	evmtypes "github.com/evmos/ethermint/x/evm/types"
 )
 
-var ethermintCodec codec.ProtoCodecMarshaler
+var ethermintCodec codec.Codec
 
 func init() {
 	registry := codectypes.NewInterfaceRegistry()
@@ -194,7 +194,15 @@ func VerifySignature(
 			return errorsmod.Wrap(errortypes.ErrNoSignatures, "tx doesn't contain any msgs to verify signature")
 		}
 
-		txBytes := legacytx.StdSignBytes(
+		if tx.GetTimeoutHeight() != 0 {
+			return errorsmod.Wrap(errortypes.ErrInvalidRequest, "legacy EIP-712 signing does not commit timeout_height, so it must be 0")
+		}
+
+		if len(tx.FeeGranter()) != 0 {
+			return errorsmod.Wrap(errortypes.ErrInvalidRequest, "legacy EIP-712 signing does not commit fee granter, so it must be empty")
+		}
+
+		txBytes := legacytx.StdSignBytes( //nolint:staticcheck
 			signerData.ChainID,
 			signerData.AccountNumber,
 			signerData.Sequence,

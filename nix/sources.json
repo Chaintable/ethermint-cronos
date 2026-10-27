@@ -48,15 +48,15 @@
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
     "nixpkgs": {
-        "branch": "release-25.11",
+        "branch": "nixos-26.05",
         "description": "Nix Packages collection",
         "homepage": "",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "9cf79b5735b34d25bb8ee55c90356e72696e7cb3",
-        "sha256": "0ijcv5w5x31vir5473qfxwy81vafgyy2amlh14n9g9pkzj9wd8p0",
+        "rev": "0ad6f47ea4fe188f4bc8f0380f93ae8523337c6c",
+        "sha256": "07lxgdh4cgvv4bl964vq0y2y6dsw44nlg9hgmhxsxajbsphk44nk",
         "type": "tarball",
-        "url": "https://github.com/NixOS/nixpkgs/archive/9cf79b5735b34d25bb8ee55c90356e72696e7cb3.tar.gz",
+        "url": "https://github.com/NixOS/nixpkgs/archive/0ad6f47ea4fe188f4bc8f0380f93ae8523337c6c.tar.gz",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
     "poetry2nix": {

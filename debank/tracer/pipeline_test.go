@@ -1,12 +1,35 @@
 package tracer
 
 import (
+	"math/big"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	dtypes "github.com/evmos/ethermint/debank/types"
+	rpctypes "github.com/evmos/ethermint/rpc/types"
 	"github.com/holiman/uint256"
+	"github.com/stretchr/testify/require"
 )
+
+func TestPipelineUsesUpstreamRPCBlockTypes(t *testing.T) {
+	header := &ethtypes.Header{
+		Number: big.NewInt(101485000), ParentHash: hash(1), Root: hash(2),
+		Difficulty: big.NewInt(0), BaseFee: big.NewInt(1000),
+		GasLimit: 60000000, GasUsed: 21000, Time: 1792656000,
+	}
+	canonicalHash := hash(3)
+	raw := rpctypes.FormatBlock(header, canonicalHash.Bytes(), 256, nil)
+	block := BuildPipelineBlock(raw)
+	out := BuildPilelineBlockHeader(raw)
+	require.Equal(t, canonicalHash.Hex(), block.ID)
+	require.Equal(t, header.Number, block.Height)
+	require.Equal(t, uint64(21000), block.GasUsed.Uint64())
+	require.Equal(t, canonicalHash, out.Hash)
+	require.Equal(t, header.Root, out.StateRoot)
+	require.Equal(t, header.Number, out.Number.ToInt())
+	require.Equal(t, uint64(21000), uint64(out.GasUsed))
+}
 
 func hash(b byte) common.Hash { return common.BytesToHash([]byte{b}) }
 

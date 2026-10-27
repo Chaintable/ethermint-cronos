@@ -51,6 +51,8 @@ TEST_CONTRACTS = {
     "GasConsumerTryCatch": "GasConsumerTryCatch.sol",
     "DelegationTarget": "DelegationTarget.sol",
     "MaliciousDeployer": "MaliciousDeployer.sol",
+    "SelfDestructExploitFactory": "SelfDestructExploit.sol",
+    "Osaka": "Osaka.sol",
 }
 
 
@@ -402,5 +404,5 @@ def fund_acc(w3, acc, fund=3000000000000000000):
     addr = acc.address
     if w3.eth.get_balance(addr, "latest") == 0:
         tx = {"to": addr, "value": fund, "gasPrice": w3.eth.gas_price}
-        send_transaction(w3, tx)
-        assert w3.eth.get_balance(addr, "latest") == fund
+        receipt = send_transaction(w3, tx)
+        assert w3.eth.get_balance(addr, receipt.blockNumber) == fund
