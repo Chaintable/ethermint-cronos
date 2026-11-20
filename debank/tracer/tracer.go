@@ -99,6 +99,8 @@ func (f *callFrame) processOutput(output []byte, err error, reverted bool) {
 // OnTxEnd (see commitStateDiff), so reverted writes are dropped.
 type debankTracer struct {
 	callstack []callFrame
+	frameGas  bool
+	entered   int
 	gasLimit  uint64
 	ctx       *tracers.Context
 	stateDB   tracing.StateDB // captured at OnTxStart; read for committed state at OnTxEnd
@@ -125,7 +127,17 @@ type debankTracer struct {
 
 // newDebankTracer is the tracers.DefaultDirectory ctor for "debankTracer".
 func newDebankTracer(ctx *tracers.Context, _ json.RawMessage, _ *params.ChainConfig) (*tracers.Tracer, error) {
+	return newTracer(ctx, false), nil
+}
+
+// NewExecutionTracer preserves frame gas from the EVM enter/exit hooks.
+func NewExecutionTracer(hash common.Hash) *tracers.Tracer {
+	return newTracer(&tracers.Context{TxHash: hash}, true)
+}
+
+func newTracer(ctx *tracers.Context, frameGas bool) *tracers.Tracer {
 	t := &debankTracer{
+		frameGas:        frameGas,
 		ctx:             ctx,
 		traces:          make([]dtypes.Trace, 0),
 		logs:            make([]dtypes.Event, 0),
@@ -153,7 +165,7 @@ func newDebankTracer(ctx *tracers.Context, _ json.RawMessage, _ *params.ChainCon
 		},
 		GetResult: t.GetResult,
 		Stop:      t.Stop,
-	}, nil
+	}
 }
 
 // --- call tree channel (modeled on go-ethereum eth/tracers/native/call.go) ---
@@ -166,6 +178,9 @@ func (t *debankTracer) OnTxStart(env *tracing.VMContext, tx *ethtypes.Transactio
 }
 
 func (t *debankTracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
+	if t.frameGas {
+		t.entered++
+	}
 	toCopy := to
 	call := callFrame{
 		Type:  vm.OpCode(typ),
@@ -175,7 +190,7 @@ func (t *debankTracer) OnEnter(depth int, typ byte, from common.Address, to comm
 		Gas:   gas,
 		Value: value,
 	}
-	if depth == 0 {
+	if depth == 0 && !t.frameGas {
 		call.Gas = t.gasLimit
 	}
 	t.callstack = append(t.callstack, call)
@@ -211,7 +226,7 @@ func (t *debankTracer) captureEnd(output []byte, gasUsed uint64, err error, reve
 }
 
 func (t *debankTracer) OnTxEnd(receipt *ethtypes.Receipt, err error) {
-	if err == nil && receipt != nil && len(t.callstack) > 0 {
+	if !t.frameGas && err == nil && receipt != nil && len(t.callstack) > 0 {
 		t.callstack[0].GasUsed = receipt.GasUsed
 	}
 	// Build the committed state diff now: execution (incl. reverts) is done and
@@ -514,6 +529,9 @@ func (t *debankTracer) finalize() {
 func (t *debankTracer) GetResult() (json.RawMessage, error) {
 	t.commitStateDiff() // no-op if OnTxEnd already ran; safety net otherwise
 	t.finalize()
+	if t.frameGas && (t.entered == 0 || len(t.callstack) != 1 || t.entered != len(t.traces)+len(t.errorTraces)) {
+		return nil, fmt.Errorf("incomplete call tree: %d entries, %d open frames, %d output frames", t.entered, len(t.callstack), len(t.traces)+len(t.errorTraces))
+	}
 	result := &dtypes.TraceResult{
 		Traces:           t.traces,
 		Events:           t.logs,

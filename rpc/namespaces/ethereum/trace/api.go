@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,15 +9,15 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/evmos/ethermint/debank/replay"
+
 	"cosmossdk.io/log/v2"
 	"github.com/bytedance/sonic"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/hexutil"
+
 	"github.com/ethereum/go-ethereum/rlp"
 
 	"github.com/evmos/ethermint/debank/bankdiff"
@@ -36,6 +37,7 @@ type API struct {
 	clientCtx   client.Context
 	queryClient *rpctypes.QueryClient
 	stateSource statediff.StateChangeSource
+	executor    replay.Executor
 }
 
 // NewAPI creates the trace namespace API.
@@ -45,6 +47,7 @@ func NewAPI(
 	backend backend.EVMBackend,
 	clientCtx client.Context,
 	stateSource statediff.StateChangeSource,
+	executor replay.Executor,
 ) *API {
 	return &API{
 		ctx:         ctx,
@@ -53,6 +56,7 @@ func NewAPI(
 		clientCtx:   clientCtx,
 		queryClient: rpctypes.NewQueryClient(clientCtx),
 		stateSource: stateSource,
+		executor:    executor,
 	}
 }
 
@@ -80,7 +84,7 @@ func (api *API) DebankBlock(ctx context.Context, blockNrOrHash rpctypes.BlockNum
 	})
 }
 
-func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (*dtypes.DebankOutPut, error) {
+func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (_ *dtypes.DebankOutPut, err error) {
 	blockHeight, err := api.backend.BlockNumberFromTendermint(blockNrOrHash)
 	if err != nil {
 		return nil, err
@@ -91,90 +95,95 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 
 	resBlock, err := api.backend.TendermintBlockByNumber(blockHeight)
 	if err != nil {
-		return nil, nil
+		return nil, fmt.Errorf("load block %d: %w", blockHeight, err)
 	}
 	if resBlock == nil || resBlock.Block == nil {
 		return nil, fmt.Errorf("cannot trace nil block")
 	}
 
+	requestedHeight := blockHeight
+	blockHeight = rpctypes.BlockNumber(resBlock.Block.Height)
+	hash := resBlock.Block.Hash()
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("replay block %d/%X: %w", blockHeight, []byte(hash), err)
+		}
+	}()
+	if requestedHeight > 0 && requestedHeight != blockHeight || !bytes.Equal(resBlock.BlockID.Hash, hash) || blockNrOrHash.BlockHash != nil && !bytes.Equal(blockNrOrHash.BlockHash.Bytes(), hash) {
+		return nil, fmt.Errorf("block identity mismatch")
+	}
+	if api.executor == nil {
+		return nil, fmt.Errorf("full Cosmos replay executor unavailable")
+	}
+	if err = api.executor.CheckReplayHeight(resBlock.Block.ChainID, int64(blockHeight)); err != nil {
+		return nil, err
+	}
+
 	blockRes, err := api.backend.TendermintBlockResultByNumber(&resBlock.Block.Height)
 	if err != nil {
 		api.logger.Debug("failed to fetch block result from Tendermint", "height", blockHeight, "error", err.Error())
-		return nil, fmt.Errorf("failed to fetch block result from Tendermint")
+		return nil, fmt.Errorf("fetch block results: %w", err)
+	}
+	if blockRes == nil || blockRes.Height != int64(blockHeight) || len(blockRes.TxsResults) != len(resBlock.Block.Txs) {
+		return nil, fmt.Errorf("incomplete ABCI results")
+	}
+	req, parentRoot, err := api.replayRequest(ctx, resBlock.Block)
+	if err != nil {
+		return nil, err
+	}
+	result, err := api.executor.ReplayBlock(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, fmt.Errorf("missing replay result")
+	}
+	if err = replay.Verify(blockRes, result.Finalize); err != nil {
+		return nil, err
+	}
+	head, err := api.backend.BlockNumber()
+	if err != nil {
+		return nil, err
+	}
+	if uint64(head) > uint64(blockHeight) {
+		next, err := api.backend.TendermintBlockByNumber(blockHeight + 1)
+		if err != nil {
+			return nil, err
+		}
+		if next == nil || next.Block == nil || !bytes.Equal(next.Block.LastBlockID.Hash, hash) || !bytes.Equal(next.Block.AppHash, result.Finalize.AppHash) {
+			return nil, fmt.Errorf("next header AppHash or parent hash mismatch")
+		}
 	}
 	block, err := api.backend.RPCBlockFromTendermintBlock(resBlock, blockRes, true)
 	if err != nil {
 		api.logger.Debug("RPCBlockFromTendermintBlock failed", "height", blockHeight, "error", err.Error())
 		return nil, err
 	}
-	if blockHeight == 1 {
-		return api.onGenesisBlock(block)
+	transactions, ok := block["transactions"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("malformed RPC block transactions")
 	}
-
-	// transactions[i], ethMsgs[i] and traceResults[i] are all produced by the
-	// same EthMsgsFromTendermintBlock flattening/filtering, so they align 1:1.
-	transactions, _ := block["transactions"].([]interface{})
 	ethMsgs, err := api.backend.EthMsgsFromTendermintBlock(resBlock, blockRes)
 	if err != nil {
 		return nil, err
 	}
 	stateHeader := dtracer.BuildPilelineBlockHeader(block)
-	parentHeader, err := api.backend.HeaderByNumber(blockHeight - 1)
-	if err != nil {
-		return nil, err
-	}
 	var baseFee *big.Int
 	if stateHeader.BaseFeePerGas != nil {
 		baseFee = (*big.Int)(stateHeader.BaseFeePerGas)
 	}
 
-	// Consensus truth (see reconcile.go): replay under the current binary can
-	// diverge from what old-era consensus recorded.
 	consensus, err := api.loadConsensus(blockHeight)
 	if err != nil {
 		return nil, err
 	}
-
-	// TraceReplay=true: tell the keeper this replays an already-included tx, so a
-	// legacy gas-accounting mismatch on the upfront fee deduction doesn't abort the
-	// trace (Cronos v1.7.8 / ethermint PR #997). Without it, affected historical txs
-	// would error and get silently skipped below, losing their trace/event/state-diff.
-	traceResults, err := api.backend.TraceBlock(blockHeight,
-		&rpctypes.TraceConfig{TraceConfig: evmtypes.TraceConfig{Tracer: dtracer.Name, TraceReplay: true}}, resBlock)
+	observed, err := api.canonicalObservations(resBlock, blockRes, result, consensus)
 	if err != nil {
 		return nil, err
 	}
-
-	blockFile, fromToAddress, diverged, err := api.assembleBlockFile(
-		blockHeight, block, transactions, ethMsgs, baseFee, traceResults, consensus)
+	blockFile, fromToAddress, err := assembleBlockFile(block, transactions, ethMsgs, baseFee, observed, consensus)
 	if err != nil {
 		return nil, err
-	}
-	if diverged {
-		// Pass 2, consensus-guided (x/evm/keeper/trace_guidance.go): the keeper
-		// commits/reverts each tx's state per consensus status and retries
-		// consensus-successful txs on a gas ladder until their logs reproduce
-		// consensus, eliminating both in-block state contamination and OOG-
-		// truncated call trees. Reconciliation still runs on the result as the
-		// final guarantee for status/gas/events.
-		guidance, err := buildGuidanceJSON(ethMsgs, consensus)
-		if err != nil {
-			return nil, err
-		}
-		api.logger.Info("debank trace: divergence detected, re-tracing consensus-guided", "height", blockHeight)
-		traceResults, err = api.backend.TraceBlock(blockHeight,
-			&rpctypes.TraceConfig{
-				TraceConfig:  evmtypes.TraceConfig{Tracer: dtracer.Name, TraceReplay: true},
-				TracerConfig: guidance,
-			}, resBlock)
-		if err != nil {
-			return nil, err
-		}
-		blockFile, fromToAddress, _, err = api.assembleBlockFile(
-			blockHeight, block, transactions, ethMsgs, baseFee, traceResults, consensus)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	evmDenom, err := api.evmDenom(blockHeight)
@@ -194,7 +203,7 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 	if err != nil {
 		return nil, fmt.Errorf("load canonical state diff for block %d: %w", blockHeight, err)
 	}
-	stateDiff := dtracer.BuildBlockStateDiff(parentHeader.Root, stateHeader.StateRoot, canonical)
+	stateDiff := dtracer.BuildBlockStateDiff(common.BytesToHash(parentRoot), stateHeader.StateRoot, canonical)
 
 	// Preserve the existing BlockFile.StorageContracts discovery from tx and
 	// native-CRO bank-event addresses; it no longer supplies stateDiff accounts.
@@ -204,6 +213,9 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 
 	blockFile.StorageContracts = mergeStorageContracts(fromToAddress, blockFile.StorageContracts)
 
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return &dtypes.DebankOutPut{
 		BlockFile:      blockFile,
 		Header:         stateHeader,
@@ -212,19 +224,10 @@ func (api *API) DebankBlockRaw(_ context.Context, blockNrOrHash rpctypes.BlockNu
 	}, nil
 }
 
-// assembleBlockFile turns per-tx trace results into the DeBank block file,
-// reconciling every tx against consensus (reconcile.go). Returns diverged=true
-// when any tx needed reconciliation, which triggers the consensus-guided
-// second tracing pass.
-func (api *API) assembleBlockFile(
-	blockHeight rpctypes.BlockNumber,
-	block map[string]interface{},
-	transactions []interface{},
-	ethMsgs []*evmtypes.MsgEthereumTx,
-	baseFee *big.Int,
-	traceResults []*evmtypes.TxTraceResult,
-	consensus map[string]*consensusReceipt,
-) (*dtypes.BlockFile, map[common.Address]struct{}, bool, error) {
+func assembleBlockFile(block map[string]interface{}, transactions []interface{}, ethMsgs []*evmtypes.MsgEthereumTx, baseFee *big.Int, observed []replay.Transaction, consensus map[string]*consensusReceipt) (*dtypes.BlockFile, map[common.Address]struct{}, error) {
+	if len(ethMsgs) != len(transactions) || len(observed) != len(ethMsgs) || len(consensus) != len(ethMsgs) {
+		return nil, nil, fmt.Errorf("EVM count mismatch: %d msgs, %d RPC txs, %d observations, %d receipts", len(ethMsgs), len(transactions), len(observed), len(consensus))
+	}
 	blockFile := &dtypes.BlockFile{
 		Block:            dtracer.BuildPipelineBlock(block),
 		Events:           make([]dtypes.Event, 0),
@@ -235,44 +238,29 @@ func (api *API) assembleBlockFile(
 		StorageContracts: make([]string, 0),
 	}
 	fromToAddress := make(map[common.Address]struct{})
-	diverged := false
 
-	for i, result := range traceResults {
-		if result.Error != "" {
-			api.logger.Error("trace result error", "error", result.Error)
-			continue
+	for i, obs := range observed {
+		realTx := ethMsgs[i].AsTransaction()
+		rt, ok := transactions[i].(*rpctypes.RPCTransaction)
+		if !ok || rt == nil || rt.Hash != obs.Hash || obs.Hash != realTx.Hash() {
+			return nil, nil, fmt.Errorf("EVM tx[%d] hash mismatch", i)
 		}
-		decoded, err := json.Marshal(result.Result)
-		if err != nil {
-			return nil, nil, false, status.Error(codes.Internal, err.Error())
+		receipt := consensus[strings.ToLower(obs.Hash.Hex())]
+		if receipt == nil {
+			return nil, nil, fmt.Errorf("tx[%d] missing receipt", i)
 		}
 		var traceResult dtypes.TraceResult
-		if err = json.Unmarshal(decoded, &traceResult); err != nil {
-			return nil, nil, false, status.Error(codes.Internal, fmt.Sprintf("trace result parse error: %v", err))
+		if err := json.Unmarshal(obs.Trace, &traceResult); err != nil {
+			return nil, nil, fmt.Errorf("tx[%d] trace: %w", i, err)
 		}
-
-		// Build the per-tx Transaction here (not in the tracer): Cronos's standard
-		// tracing.Hooks cannot supply nonce/gasPrice/status. The real tx provides
-		// nonce/gasPrice/feeCap; from is the recovered sender; gasUsed/status come
-		// from the tracer's root trace.
-		if i < len(ethMsgs) {
-			realTx := ethMsgs[i].AsTransaction()
-			txHash := strings.ToLower(realTx.Hash().Hex())
-			if sum := reconcileTx(&traceResult, consensus[txHash], realTx.Gas()); sum.changed() {
-				diverged = true
-				api.logger.Info("debank consensus reconciliation applied",
-					"height", blockHeight, "tx", txHash,
-					"status_flipped", sum.StatusFlipped, "events_rebuilt", sum.EventsRebuilt,
-					"dropped_replay_events", sum.DroppedEvents, "root_attached_logs", sum.RootAttached)
-			}
-			from := senderAt(transactions, i)
-			gasUsed, success := rootGasAndStatus(traceResult)
-			blockFile.Txs = append(blockFile.Txs,
-				dtracer.BuildPipelineTransaction(realTx, int64(i), from, new(big.Int).SetUint64(gasUsed), baseFee, success))
-			fromToAddress[from] = struct{}{}
-			if to := realTx.To(); to != nil {
-				fromToAddress[*to] = struct{}{}
-			}
+		if err := checkReceipt(&traceResult, obs.Hash.Hex(), receipt); err != nil {
+			return nil, nil, fmt.Errorf("tx[%d]: %w", i, err)
+		}
+		tx := dtracer.BuildPipelineTransaction(realTx, int64(i), rt.From, new(big.Int).SetUint64(receipt.GasUsed), baseFee, receipt.Status)
+		blockFile.Txs = append(blockFile.Txs, tx)
+		fromToAddress[rt.From] = struct{}{}
+		if to := realTx.To(); to != nil {
+			fromToAddress[*to] = struct{}{}
 		}
 
 		blockFile.Traces = append(blockFile.Traces, traceResult.Traces...)
@@ -282,64 +270,7 @@ func (api *API) assembleBlockFile(
 		blockFile.StorageContracts = append(blockFile.StorageContracts, traceResult.StorageContracts...)
 	}
 
-	// Align event.LogIndex to the chain's native logIndex (what
-	// eth_getBlockReceipts returns), not a fresh 0-based counter, so downstream
-	// can join on it. Reconciliation makes blockFile.Events a 1:1, in-execution-
-	// order image of the block's consensus logs, and the native logIndex is also
-	// block-global in execution order, so pairing the sorted native indices to
-	// the events positionally reproduces the on-chain value (including the old
-	// binary's 1-based / gapped quirks on early blocks). If the counts disagree
-	// (e.g. a tx missing from the consensus map), fall back to 0-based rather
-	// than mis-assign.
-	native := make([]int64, 0, len(blockFile.Events))
-	for _, rc := range consensus {
-		for _, lg := range rc.Logs {
-			native = append(native, int64(lg.Index))
-		}
-	}
-	sort.Slice(native, func(a, b int) bool { return native[a] < native[b] })
-	if len(native) == len(blockFile.Events) {
-		for i := range blockFile.Events {
-			blockFile.Events[i].LogIndex = native[i]
-		}
-	} else {
-		for i := range blockFile.Events {
-			blockFile.Events[i].LogIndex = int64(i)
-		}
-	}
-	return blockFile, fromToAddress, diverged, nil
-}
-
-// buildGuidanceJSON encodes per-tx consensus truth (in block tx order) for the
-// keeper's guided TraceBlock. The JSON shape is the contract with
-// x/evm/keeper/trace_guidance.go (guidanceEnvelope / TxGuidance).
-func buildGuidanceJSON(ethMsgs []*evmtypes.MsgEthereumTx, consensus map[string]*consensusReceipt) (json.RawMessage, error) {
-	type gLog struct {
-		Address string   `json:"address"`
-		Topics  []string `json:"topics"`
-		Data    string   `json:"data"`
-	}
-	type gTx struct {
-		Failed bool   `json:"failed"`
-		Logs   []gLog `json:"logs"`
-	}
-	guidance := make([]*gTx, len(ethMsgs))
-	for i, msg := range ethMsgs {
-		c := consensus[strings.ToLower(msg.AsTransaction().Hash().Hex())]
-		if c == nil {
-			continue
-		}
-		g := &gTx{Failed: !c.Status, Logs: make([]gLog, 0, len(c.Logs))}
-		for _, l := range c.Logs {
-			topics := make([]string, len(l.Topics))
-			for j, t := range l.Topics {
-				topics[j] = t.Hex()
-			}
-			g.Logs = append(g.Logs, gLog{Address: l.Address.Hex(), Topics: topics, Data: hexutil.Encode(l.Data)})
-		}
-		guidance[i] = g
-	}
-	return json.Marshal(map[string]interface{}{"debankConsensusGuidance": guidance})
+	return blockFile, fromToAddress, nil
 }
 
 func mergeStorageContracts(addresses map[common.Address]struct{}, storageChange []string) []string {
@@ -355,6 +286,7 @@ func mergeStorageContracts(addresses map[common.Address]struct{}, storageChange 
 	for address := range storageChangeMap {
 		resStorageChange = append(resStorageChange, strings.ToLower(address.Hex()))
 	}
+	sort.Strings(resStorageChange)
 	return resStorageChange
 }
 
@@ -365,39 +297,4 @@ func (api *API) evmDenom(height rpctypes.BlockNumber) (string, error) {
 		return "", err
 	}
 	return res.Params.EvmDenom, nil
-}
-
-// senderAt returns the recovered sender of the i-th block transaction.
-func senderAt(transactions []interface{}, i int) common.Address {
-	if i >= len(transactions) {
-		return common.Address{}
-	}
-	if rt, ok := transactions[i].(*rpctypes.RPCTransaction); ok {
-		return rt.From
-	}
-	return common.Address{}
-}
-
-// rootGasAndStatus extracts the tx-level gas used and success from the tracer's
-// root trace (TraceAddress == []): a successful root lands in Traces, a reverted
-// one in ErrorTraces.
-func rootGasAndStatus(tr dtypes.TraceResult) (uint64, bool) {
-	for i := range tr.Traces {
-		if len(tr.Traces[i].TraceAddress) == 0 {
-			return gasOf(tr.Traces[i]), true
-		}
-	}
-	for i := range tr.ErrorTraces {
-		if len(tr.ErrorTraces[i].TraceAddress) == 0 {
-			return gasOf(tr.ErrorTraces[i]), false
-		}
-	}
-	return 0, true
-}
-
-func gasOf(t dtypes.Trace) uint64 {
-	if t.GasUsed == nil {
-		return 0
-	}
-	return t.GasUsed.Uint64()
 }

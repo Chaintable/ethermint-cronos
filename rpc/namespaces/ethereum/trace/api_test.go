@@ -1,8 +1,15 @@
 package trace
 
 import (
+	"bytes"
+	"context"
 	"strings"
 	"testing"
+
+	ctypes "github.com/cometbft/cometbft/rpc/core/types"
+	tmtypes "github.com/cometbft/cometbft/types"
+	"github.com/evmos/ethermint/rpc/backend"
+	rpctypes "github.com/evmos/ethermint/rpc/types"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/require"
@@ -18,4 +25,29 @@ func TestMergeStorageContractsPreservesAndAddsAddresses(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		strings.ToLower(first.Hex()), strings.ToLower(second.Hex()),
 	}, got)
+}
+
+type movedBlockBackend struct {
+	backend.EVMBackend
+	block *ctypes.ResultBlock
+}
+
+func (m movedBlockBackend) BlockNumberFromTendermint(rpctypes.BlockNumberOrHash) (rpctypes.BlockNumber, error) {
+	return rpctypes.BlockNumber(m.block.Block.Height), nil
+}
+
+func (m movedBlockBackend) TendermintBlockByNumber(rpctypes.BlockNumber) (*ctypes.ResultBlock, error) {
+	return m.block, nil
+}
+
+func TestHashLookupRejectsChangedBlock(t *testing.T) {
+	block := tmtypes.MakeBlock(101485001, nil, nil, nil)
+	block.ValidatorsHash = bytes.Repeat([]byte{1}, 32)
+	hash := block.Hash()
+	other := common.HexToHash("0x22")
+	api := API{backend: movedBlockBackend{block: &ctypes.ResultBlock{Block: block, BlockID: tmtypes.BlockID{Hash: hash}}}}
+	result, err := api.DebankBlockRaw(context.Background(), rpctypes.BlockNumberOrHash{BlockHash: &other})
+	require.Nil(t, result)
+	require.ErrorContains(t, err, "block identity mismatch")
+	require.ErrorContains(t, err, "101485001")
 }

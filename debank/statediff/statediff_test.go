@@ -127,9 +127,12 @@ func TestCanonicalStateAt(t *testing.T) {
 	_, err := CanonicalStateAt(source, 11, "basecro")
 	require.NoError(t, err)
 	require.Equal(t, 1, source.calls)
+	source.latest = 11
+	_, err = CanonicalStateAt(source, 11, "basecro")
+	require.NoError(t, err)
 
 	for name, mutate := range map[string]func(*fakeSource){
-		"latest":   func(s *fakeSource) { s.latest = 11 },
+		"latest":   func(s *fakeSource) { s.latest = 10 },
 		"previous": func(s *fakeSource) { s.exists[10] = false },
 		"version":  func(s *fakeSource) { s.exists[11] = false },
 		"source":   func(s *fakeSource) { s.err = errors.New("boom") },
@@ -168,6 +171,7 @@ func (s fakeIAVLStore) TraverseStateChanges(_, _ int64, fn func(int64, *iavl.Cha
 	}
 	return nil
 }
+
 func (s fakeIAVLStore) Snapshot(int64) (stateReader, error) {
 	if s.snapshots != nil {
 		(*s.snapshots)++

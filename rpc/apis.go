@@ -24,6 +24,7 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 
 	"github.com/evmos/ethermint/appmempool"
+	"github.com/evmos/ethermint/debank/replay"
 	"github.com/evmos/ethermint/debank/statediff"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/debug"
@@ -191,6 +192,7 @@ func GetRPCAPIsWithMempool(ctx *server.Context,
 	selectedAPIs []string,
 	client appmempool.MempoolClient,
 	stateSource statediff.StateChangeSource,
+	executor replay.Executor,
 ) []rpc.API {
 	var apis []rpc.API
 
@@ -200,7 +202,7 @@ func GetRPCAPIsWithMempool(ctx *server.Context,
 			apis = append(apis, rpc.API{
 				Namespace: TraceNamespace,
 				Version:   apiVersion,
-				Service:   trace.NewAPI(ctx, ctx.Logger, evmBackend, clientCtx, stateSource),
+				Service:   trace.NewAPI(ctx, ctx.Logger, evmBackend, clientCtx, stateSource, executor),
 				Public:    true,
 			})
 			continue
