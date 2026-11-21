@@ -127,15 +127,35 @@ type debankTracer struct {
 
 // newDebankTracer is the tracers.DefaultDirectory ctor for "debankTracer".
 func newDebankTracer(ctx *tracers.Context, _ json.RawMessage, _ *params.ChainConfig) (*tracers.Tracer, error) {
-	return newTracer(ctx, false), nil
+	t, _ := newTracer(ctx, false)
+	return t, nil
 }
 
 // NewExecutionTracer preserves frame gas from the EVM enter/exit hooks.
 func NewExecutionTracer(hash common.Hash) *tracers.Tracer {
-	return newTracer(&tracers.Context{TxHash: hash}, true)
+	t, _ := newTracer(&tracers.Context{TxHash: hash}, true)
+	return t
 }
 
-func newTracer(ctx *tracers.Context, frameGas bool) *tracers.Tracer {
+// NewReplayTracer finalizes signed messages after Cosmos post-processing.
+func NewReplayTracer(hash common.Hash) (*tracing.Hooks, func(string) (json.RawMessage, error)) {
+	tr, t := newTracer(&tracers.Context{TxHash: hash}, true)
+	return tr.Hooks, func(vmError string) (json.RawMessage, error) {
+		if vmError != "" && len(t.callstack) == 1 && t.callstack[0].Error == "" {
+			// The EVM returned successfully but the enclosing SDK cache was discarded.
+			t.callstack[0].Error = vmError
+			t.committed = true
+			clear(t.DeletedAccounts)
+			clear(t.NewAccounts)
+			clear(t.StorageDiff)
+			clear(t.NewCodes)
+			clear(t.storageChanges)
+		}
+		return t.GetResult()
+	}
+}
+
+func newTracer(ctx *tracers.Context, frameGas bool) (*tracers.Tracer, *debankTracer) {
 	t := &debankTracer{
 		frameGas:        frameGas,
 		ctx:             ctx,
@@ -165,7 +185,7 @@ func newTracer(ctx *tracers.Context, frameGas bool) *tracers.Tracer {
 		},
 		GetResult: t.GetResult,
 		Stop:      t.Stop,
-	}
+	}, t
 }
 
 // --- call tree channel (modeled on go-ethereum eth/tracers/native/call.go) ---
