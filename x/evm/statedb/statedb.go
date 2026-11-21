@@ -28,9 +28,18 @@ var _ vm.StateDB = &StateDB{}
 // nested states. It's the general query interface to retrieve:
 // * Contracts
 // * Accounts
+type WriteObserver interface {
+	OnLog(*ethtypes.Log)
+	OnStorageChange(common.Address, common.Hash, common.Hash)
+	OnAccountChange(common.Address)
+}
+
+func (s *StateDB) SetWriteObserver(o WriteObserver) { s.observer = o }
+
 type StateDB struct {
-	keeper Keeper
-	ctx    sdk.Context
+	observer WriteObserver
+	keeper   Keeper
+	ctx      sdk.Context
 
 	// Journal of state modifications. This is the backbone of
 	// Snapshot and RevertToSnapshot.
@@ -79,6 +88,9 @@ func (s *StateDB) AddLog(log *ethtypes.Log) {
 	log.TxIndex = s.txConfig.TxIndex
 	log.Index = s.txConfig.LogIndex + uint(len(s.logs))
 	s.logs = append(s.logs, log)
+	if s.observer != nil {
+		s.observer.OnLog(log)
+	}
 }
 
 // Logs returns the logs of current transaction.
@@ -305,6 +317,9 @@ func (s *StateDB) SubBalance(addr common.Address, amount *big.Int) {
 
 // SetNonce sets the nonce of account.
 func (s *StateDB) SetNonce(addr common.Address, nonce uint64) {
+	if s.observer != nil {
+		s.observer.OnAccountChange(addr)
+	}
 	stateObject := s.getOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SetNonce(nonce)
@@ -313,6 +328,9 @@ func (s *StateDB) SetNonce(addr common.Address, nonce uint64) {
 
 // SetCode sets the code of account.
 func (s *StateDB) SetCode(addr common.Address, code []byte) {
+	if s.observer != nil {
+		s.observer.OnAccountChange(addr)
+	}
 	stateObject := s.getOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SetCode(crypto.Keccak256Hash(code), code)
@@ -321,6 +339,9 @@ func (s *StateDB) SetCode(addr common.Address, code []byte) {
 
 // SetState sets the contract state.
 func (s *StateDB) SetState(addr common.Address, key, value common.Hash) {
+	if s.observer != nil {
+		s.observer.OnStorageChange(addr, key, s.GetState(addr, key))
+	}
 	stateObject := s.getOrNewStateObject(addr)
 	if stateObject != nil {
 		stateObject.SetState(key, value)
@@ -333,6 +354,9 @@ func (s *StateDB) SetState(addr common.Address, key, value common.Hash) {
 // The account's state object is still available until the state is committed,
 // getStateObject will return a non-nil account after Suicide.
 func (s *StateDB) Suicide(addr common.Address) bool {
+	if s.observer != nil {
+		s.observer.OnAccountChange(addr)
+	}
 	stateObject := s.getStateObject(addr)
 	if stateObject == nil {
 		return false

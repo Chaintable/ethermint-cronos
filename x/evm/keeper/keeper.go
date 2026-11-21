@@ -24,6 +24,7 @@ import (
 
 // Keeper grants access to the EVM module state and implements the go-ethereum StateDB interface.
 type Keeper struct {
+	replaySink func(ReplayTransaction, error)
 	// Protobuf codec
 	cdc codec.BinaryCodec
 	// Store key required for the EVM Prefix KVStore. It is required by:
