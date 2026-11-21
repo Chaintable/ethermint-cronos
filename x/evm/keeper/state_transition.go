@@ -306,7 +306,7 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, tx *ethtypes.Transaction) (*t
 	k.ResetGasMeterAndConsumeGas(ctx, totalGasUsed)
 	if observation != nil {
 		raw, traceErr := observation.Result(statedb.New(ctx.WithGasMeter(sdk.NewInfiniteGasMeter()), k, txConfig), res.VmError)
-		k.replaySink(ReplayTransaction{CosmosHash: tmhash.Sum(ctx.TxBytes()), Hash: txConfig.TxHash, GasUsed: res.GasUsed, VmError: res.VmError, RootOutput: observation.RootOutput, Trace: raw}, traceErr)
+		k.replaySink(ReplayTransaction{PreRollbackEvents: observation.PreRollbackEvents, CosmosHash: tmhash.Sum(ctx.TxBytes()), Hash: txConfig.TxHash, GasUsed: res.GasUsed, VmError: res.VmError, RootOutput: observation.RootOutput, Trace: raw}, traceErr)
 	}
 	return res, nil
 }
