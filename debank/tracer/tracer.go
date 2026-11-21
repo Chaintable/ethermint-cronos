@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -83,6 +84,9 @@ func (f *callFrame) processOutput(output []byte, err error, reverted bool) {
 
 // ExecutionTracer records calls and StateDB writes during one canonical Ethereum message.
 type ExecutionTracer struct {
+	// The old keeper retains successful VM logs in its ABCI response even
+	// when a later Cosmos hook discards the VM cache.
+	PreRollbackEvents []dtypes.Event
 	evmtypes.NoOpTracer
 	// RootOutput preserves the VM return bytes before call-frame error formatting.
 	RootOutput  []byte
@@ -484,11 +488,32 @@ func (t *ExecutionTracer) finalize() {
 	t.addTraceAndLog(top, []int64{})
 }
 
-func (t *ExecutionTracer) Result(stateDB vm.StateDB) (json.RawMessage, error) {
+// vmEvents excludes subcalls reverted inside the VM. OnLog records the
+// historical block log index before the keeper rolls back its cache.
+func vmEvents(f *callFrame, events []dtypes.Event) []dtypes.Event {
+	if f.failed() {
+		return events
+	}
+	events = append(events, f.Logs...)
+	for i := range f.Calls {
+		events = vmEvents(&f.Calls[i], events)
+	}
+	return events
+}
+
+func (t *ExecutionTracer) Result(stateDB vm.StateDB, vmError string) (json.RawMessage, error) {
 	if !t.nestedHooks && t.nestedOp != 0 {
 		return nil, fmt.Errorf("incomplete call observation for %s: historical VM did not report nested %s execution", t.hash.Hex(), t.nestedOp)
 	}
-	t.commitStateDiff(stateDB)
+	if vmError != "" && len(t.callstack) == 1 && !t.callstack[0].failed() {
+		t.PreRollbackEvents = vmEvents(&t.callstack[0], nil)
+		sort.SliceStable(t.PreRollbackEvents, func(i, j int) bool {
+			return t.PreRollbackEvents[i].LogIndex < t.PreRollbackEvents[j].LogIndex
+		})
+		t.callstack[0].Error = vmError
+	} else {
+		t.commitStateDiff(stateDB)
+	}
 	t.finalize()
 	if t.entered == 0 || len(t.callstack) != 1 || t.entered != len(t.traces)+len(t.errorTraces) {
 		return nil, fmt.Errorf("incomplete call tree: %d entries, %d open frames, %d output frames", t.entered, len(t.callstack), len(t.traces)+len(t.errorTraces))
