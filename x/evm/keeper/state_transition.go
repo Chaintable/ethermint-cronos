@@ -1,6 +1,8 @@
 package keeper
 
 import (
+	"github.com/tendermint/tendermint/crypto/tmhash"
+	replaytrace "github.com/tharsis/ethermint/debank/tracer"
 	"math"
 	"math/big"
 
@@ -176,7 +178,7 @@ func (k Keeper) GetHashFn(ctx sdk.Context) vm.GetHashFunc {
 // ApplyTransaction runs and attempts to perform a state transition with the given transaction (i.e Message), that will
 // only be persisted (committed) to the underlying KVStore if the transaction does not fail.
 //
-// Gas tracking
+// # Gas tracking
 //
 // Ethereum consumes gas according to the EVM opcodes instead of general reads and writes to store. Because of this, the
 // state transition needs to ignore the SDK gas consumption mechanism defined by the GasKVStore and instead consume the
@@ -221,7 +223,13 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, tx *ethtypes.Transaction) (*t
 	}
 
 	// pass true to commit the StateDB
-	res, err := k.ApplyMessageWithConfig(tmpCtx, msg, nil, true, cfg, txConfig)
+	var observation *replaytrace.ExecutionTracer
+	var logger vm.EVMLogger
+	if k.replaySink != nil {
+		observation = replaytrace.NewExecutionTracer(txConfig.TxHash)
+		logger = observation
+	}
+	res, err := k.ApplyMessageWithConfig(tmpCtx, msg, logger, true, cfg, txConfig)
 	if err != nil {
 		return nil, sdkerrors.Wrap(err, "failed to apply ethereum core message")
 	}
@@ -296,6 +304,10 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, tx *ethtypes.Transaction) (*t
 
 	// reset the gas meter for current cosmos transaction
 	k.ResetGasMeterAndConsumeGas(ctx, totalGasUsed)
+	if observation != nil {
+		raw, traceErr := observation.Result(statedb.New(ctx.WithGasMeter(sdk.NewInfiniteGasMeter()), k, txConfig), res.VmError)
+		k.replaySink(ReplayTransaction{PreRollbackEvents: observation.PreRollbackEvents, CosmosHash: tmhash.Sum(ctx.TxBytes()), Hash: txConfig.TxHash, GasUsed: res.GasUsed, VmError: res.VmError, RootOutput: observation.RootOutput, Trace: raw}, traceErr)
+	}
 	return res, nil
 }
 
@@ -303,18 +315,18 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, tx *ethtypes.Transaction) (*t
 // If the message fails, the VM execution error with the reason will be returned to the client
 // and the transaction won't be committed to the store.
 //
-// Reverted state
+// # Reverted state
 //
 // The snapshot and rollback are supported by the `statedb.StateDB`.
 //
-// Different Callers
+// # Different Callers
 //
 // It's called in three scenarios:
 // 1. `ApplyTransaction`, in the transaction processing flow.
 // 2. `EthCall/EthEstimateGas` grpc query handler.
 // 3. Called by other native modules directly.
 //
-// Prechecks and Preprocessing
+// # Prechecks and Preprocessing
 //
 // All relevant state transition prechecks for the MsgEthereumTx are performed on the AnteHandler,
 // prior to running the transaction against the state. The prechecks run are the following:
@@ -330,11 +342,11 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, tx *ethtypes.Transaction) (*t
 //
 // 1. set up the initial access list (iff fork > Berlin)
 //
-// Tracer parameter
+// # Tracer parameter
 //
 // It should be a `vm.Tracer` object or nil, if pass `nil`, it'll create a default one based on keeper options.
 //
-// Commit parameter
+// # Commit parameter
 //
 // If commit is true, the `StateDB` will be committed, otherwise discarded.
 func (k *Keeper) ApplyMessageWithConfig(ctx sdk.Context, msg core.Message, tracer vm.EVMLogger, commit bool, cfg *types.EVMConfig, txConfig statedb.TxConfig) (*types.MsgEthereumTxResponse, error) {
@@ -351,6 +363,9 @@ func (k *Keeper) ApplyMessageWithConfig(ctx sdk.Context, msg core.Message, trace
 	}
 
 	stateDB := statedb.New(ctx, k, txConfig)
+	if observer, ok := tracer.(*replaytrace.ExecutionTracer); ok {
+		stateDB.SetWriteObserver(observer)
+	}
 	evm := k.NewEVM(ctx, msg, cfg, tracer, stateDB)
 
 	sender := vm.AccountRef(msg.From())
