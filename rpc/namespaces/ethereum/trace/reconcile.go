@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	ctypes "github.com/cometbft/cometbft/rpc/core/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	dtypes "github.com/evmos/ethermint/debank/types"
+	rpctypes "github.com/evmos/ethermint/rpc/types"
 	evm "github.com/evmos/ethermint/x/evm/types"
 )
 
@@ -24,13 +26,30 @@ type consensusReceipt struct {
 // own receipt path (CometBFT block results). Failing to load it fails the
 // whole trace: emitting unreconciled data would silently reintroduce the
 // replay-divergence class this exists to fix.
-func loadConsensus(results *ctypes.ResultBlockResults) (map[string]*consensusReceipt, error) {
+func loadConsensus(block *ctypes.ResultBlock, results *ctypes.ResultBlockResults, decode sdk.TxDecoder) (map[string]*consensusReceipt, error) {
 	cons := make(map[string]*consensusReceipt)
 	for i, tx := range results.TxsResults {
 		if tx == nil {
 			return nil, fmt.Errorf("missing Cosmos result at %d", i)
 		}
 		if tx.Code != 0 {
+			if rpctypes.TxExceedBlockGasLimit(tx) {
+				// The SDK omits MsgResponses. The signed gas limit is charged
+				// for each Ethereum message included in the failed envelope.
+				envelope, err := decode(block.Block.Txs[i])
+				if err != nil {
+					return nil, fmt.Errorf("Cosmos tx %d: %w", i, err)
+				}
+				for _, m := range envelope.GetMsgs() {
+					if msg, ok := m.(*evm.MsgEthereumTx); ok {
+						key := msg.AsTransaction().Hash().Hex()
+						if _, exists := cons[key]; exists {
+							return nil, fmt.Errorf("duplicate EVM receipt %s", key)
+						}
+						cons[key] = &consensusReceipt{GasUsed: msg.GetGas()}
+					}
+				}
+			}
 			continue
 		}
 		var msgs sdk.TxMsgData
@@ -61,6 +80,28 @@ func loadConsensus(results *ctypes.ResultBlockResults) (map[string]*consensusRec
 		}
 	}
 	return cons, nil
+}
+
+func (msg includedMessage) receiptTrace(receipt *consensusReceipt) (dtypes.TraceResult, error) {
+	var tr dtypes.TraceResult
+	if msg.blockGasError != "" && len(msg.Trace) == 0 {
+		// The keeper did not observe an EVM call for this included message.
+		return tr, nil
+	}
+	if err := json.Unmarshal(msg.Trace, &tr); err != nil {
+		return tr, err
+	}
+	if msg.blockGasError != "" {
+		for i := range tr.Traces {
+			if len(tr.Traces[i].TraceAddress) == 0 {
+				tr.Traces[i].Error = msg.blockGasError
+			}
+		}
+		tr.ErrorTraces = append(tr.Traces, tr.ErrorTraces...)
+		tr.ErrorEvents = append(tr.Events, tr.ErrorEvents...)
+		tr.Traces, tr.Events, tr.StorageContracts = nil, nil, nil
+	}
+	return tr, checkReceipt(&tr, msg.Hash.Hex(), receipt)
 }
 
 // checkReceipt leaves call-frame gas and ownership intact. Committed log
