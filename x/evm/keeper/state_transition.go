@@ -17,7 +17,10 @@ package keeper
 
 import (
 	"bytes"
+	storetypes "cosmossdk.io/store/types"
 	"fmt"
+	"github.com/evmos/ethermint/debank/replay"
+	replaytrace "github.com/evmos/ethermint/debank/tracer"
 	"math/big"
 	"sort"
 
@@ -177,6 +180,11 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) 
 	}
 
 	// pass true to commit the StateDB
+	var observation *replaytrace.ExecutionTracer
+	if k.replaySink != nil {
+		observation = replaytrace.NewExecutionTracer(ethTx.Hash())
+		cfg.Tracer = observation
+	}
 	res, err := k.ApplyMessageWithConfig(tmpCtx, msg, cfg, true)
 	if err != nil {
 		return nil, errorsmod.Wrap(err, "failed to apply ethereum core message")
@@ -235,6 +243,15 @@ func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) 
 
 	// reset the gas meter for current cosmos transaction
 	k.ResetGasMeterAndConsumeGas(ctx, totalGasUsed)
+	if observation != nil {
+		state := statedb.NewWithParams(ctx.WithGasMeter(storetypes.NewInfiniteGasMeter()), k, cfg.TxConfig, cfg.Params.EvmDenom)
+		raw, err := observation.Result(state, res.VmError)
+		tx := replay.Transaction{Hash: ethTx.Hash(), GasUsed: res.GasUsed, Failed: res.Failed(), CosmosIndex: ctx.TxIndex(), MessageIndex: ctx.MsgIndex(), Trace: raw}
+		if err != nil {
+			tx.Error = err.Error()
+		}
+		k.replaySink(tx)
+	}
 	return res, nil
 }
 
@@ -315,6 +332,9 @@ func (k *Keeper) ApplyMessageWithConfig(
 	}
 
 	stateDB := statedb.NewWithParams(ctx, k, cfg.TxConfig, cfg.Params.EvmDenom)
+	if o, ok := cfg.GetTracer().(*replaytrace.ExecutionTracer); ok {
+		stateDB.SetWriteObserver(o)
+	}
 	var evm *vm.EVM
 	if cfg.Overrides != nil {
 		if err := cfg.Overrides.Apply(stateDB); err != nil {
