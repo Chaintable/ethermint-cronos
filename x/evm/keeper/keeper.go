@@ -16,6 +16,7 @@
 package keeper
 
 import (
+	"github.com/evmos/ethermint/debank/replay"
 	"math/big"
 
 	errorsmod "cosmossdk.io/errors"
@@ -65,7 +66,8 @@ type Keeper struct {
 	eip155ChainID *big.Int
 
 	// Tracer used to collect execution traces from the EVM transaction execution
-	tracer string
+	tracer     string
+	replaySink func(replay.Transaction)
 
 	// EVM Hooks for tx post-processing
 	hooks types.EvmHooks
@@ -327,3 +329,5 @@ func (k Keeper) DeleteHeaderHash(ctx sdk.Context, height uint64) {
 	store := ctx.KVStore(k.storeKey)
 	store.Delete(types.GetHeaderHashKey(height))
 }
+
+func (k *Keeper) SetReplaySink(sink func(replay.Transaction)) { k.replaySink = sink }
