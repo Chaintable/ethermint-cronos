@@ -251,7 +251,7 @@ func (k *Keeper) ApplyTransaction(tx *ethtypes.Transaction) (*types.MsgEthereumT
 		reader := *k
 		reader.ctxStack.Reset(k.Ctx().WithGasMeter(sdk.NewInfiniteGasMeter()))
 		trace, err := k.activeTrace.Result(&reader, res.VmError)
-		k.replaySink(ReplayTransaction{PreRollbackEvents: k.activeTrace.PreRollbackEvents, CosmosHash: tmhash.Sum(ctx.TxBytes()), Hash: txHash, GasUsed: res.GasUsed, VmError: res.VmError, Trace: trace, RootOutput: k.activeTrace.RootOutput}, err)
+		k.replaySink(ReplayTransaction{MessageResult: res, PreRollbackEvents: k.activeTrace.PreRollbackEvents, CosmosHash: tmhash.Sum(ctx.TxBytes()), Hash: txHash, GasUsed: res.GasUsed, VmError: res.VmError, Trace: trace, RootOutput: k.activeTrace.RootOutput}, err)
 	}
 	k.resetGasMeterAndConsumeGas(res.GasUsed)
 	return res, nil

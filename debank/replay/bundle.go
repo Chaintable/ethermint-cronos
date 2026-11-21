@@ -109,7 +109,8 @@ func (r *BlockResult) Bundle(decoder sdk.TxDecoder, miner common.Address, limit 
 	offset := 0
 	for i, raw := range r.Block.Txs {
 		result := r.DeliverTxs[i]
-		if result.Code != 0 {
+		blockGasExceeded := result.Code == 11 && strings.Contains(result.Log, "out of gas in location: block gas meter; gasWanted:")
+		if result.Code != 0 && !blockGasExceeded {
 			// A later Cosmos message can roll back earlier EVM execution in this envelope.
 			for offset < len(observations) && bytes.Equal(raw.Hash(), observations[offset].CosmosHash) {
 				offset++
@@ -129,7 +130,7 @@ func (r *BlockResult) Bundle(decoder sdk.TxDecoder, miner common.Address, limit 
 			if !ok {
 				continue
 			}
-			if offset >= len(observations) || j >= len(responses.Data) || responses.Data[j] == nil {
+			if offset >= len(observations) {
 				return nil, fmt.Errorf("missing EVM result for Cosmos message %d/%d", i, j)
 			}
 			tx := ethMsg.AsTransaction()
@@ -138,11 +139,24 @@ func (r *BlockResult) Bundle(decoder sdk.TxDecoder, miner common.Address, limit 
 			if obs.Hash != tx.Hash() || !bytes.Equal(obs.CosmosHash, raw.Hash()) {
 				return nil, fmt.Errorf("observation identity mismatch at %d/%d", i, j)
 			}
-			var receipt evm.MsgEthereumTxResponse
-			if err := receipt.Unmarshal(responses.Data[j].Data); err != nil {
-				return nil, err
+			var wireReceipt evm.MsgEthereumTxResponse
+			receipt := obs.MessageResult
+			if blockGasExceeded {
+				// In v0.6 a successful message cache write precedes the block
+				// gas charge. Its panic clears the outer ABCI response data.
+				if receipt == nil {
+					return nil, fmt.Errorf("missing executed message response at %d/%d", i, j)
+				}
+			} else {
+				if j >= len(responses.Data) || responses.Data[j] == nil {
+					return nil, fmt.Errorf("missing ABCI message response at %d/%d", i, j)
+				}
+				if err := wireReceipt.Unmarshal(responses.Data[j].Data); err != nil {
+					return nil, err
+				}
+				receipt = &wireReceipt
 			}
-			traced, err := checkMessage(obs, &receipt)
+			traced, err := checkMessage(obs, receipt)
 			if err != nil {
 				return nil, err
 			}
