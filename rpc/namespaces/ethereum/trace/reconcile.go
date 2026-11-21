@@ -1,14 +1,18 @@
 package trace
 
 import (
+	"encoding/json"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
+	ctypes "github.com/cometbft/cometbft/rpc/core/types"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	dtypes "github.com/evmos/ethermint/debank/types"
 	rpctypes "github.com/evmos/ethermint/rpc/types"
+	evm "github.com/evmos/ethermint/x/evm/types"
 )
 
 // consensusReceipt is the stored consensus truth for one transaction.
@@ -22,50 +26,82 @@ type consensusReceipt struct {
 // own receipt path (CometBFT block results). Failing to load it fails the
 // whole trace: emitting unreconciled data would silently reintroduce the
 // replay-divergence class this exists to fix.
-func (api *API) loadConsensus(blockHeight rpctypes.BlockNumber) (map[string]*consensusReceipt, error) {
-	rcpts, err := api.backend.GetBlockReceipts(blockHeight)
-	if err != nil {
-		return nil, fmt.Errorf("load consensus receipts for block %d: %w", blockHeight, err)
-	}
-	cons := make(map[string]*consensusReceipt, len(rcpts))
-	for _, rc := range rcpts {
-		var key string
-		switch h := rc["transactionHash"].(type) {
-		case interface{ Hex() string }: // common.Hash, what buildReceiptDirect stores today
-			key = strings.ToLower(h.Hex())
-		case string: // tolerate a receipt builder that stores the hex string directly
-			key = strings.ToLower(h)
-		default:
-			return nil, fmt.Errorf("receipt transactionHash has unexpected type %T", rc["transactionHash"])
+func loadConsensus(block *ctypes.ResultBlock, results *ctypes.ResultBlockResults, decode sdk.TxDecoder) (map[string]*consensusReceipt, error) {
+	cons := make(map[string]*consensusReceipt)
+	for i, tx := range results.TxsResults {
+		if tx == nil {
+			return nil, fmt.Errorf("missing Cosmos result at %d", i)
 		}
-		status, ok := rc["status"].(hexutil.Uint)
-		if !ok {
-			return nil, fmt.Errorf("receipt status has unexpected type %T", rc["status"])
-		}
-		gasUsed, ok := rc["gasUsed"].(hexutil.Uint64)
-		if !ok {
-			return nil, fmt.Errorf("receipt gasUsed has unexpected type %T", rc["gasUsed"])
-		}
-		// A missing log array cannot certify a transaction with zero logs.
-		logs, ok := rc["logs"].([]*ethtypes.Log)
-		if !ok {
-			return nil, fmt.Errorf("receipt logs has unexpected type %T", rc["logs"])
-		}
-		if _, duplicate := cons[key]; duplicate {
-			return nil, fmt.Errorf("duplicate receipt for %s", key)
-		}
-		for i, lg := range logs {
-			if lg == nil {
-				return nil, fmt.Errorf("receipt %s log[%d] missing", key, i)
+		if tx.Code != 0 {
+			if rpctypes.TxExceedBlockGasLimit(tx) {
+				// The SDK omits MsgResponses. The signed gas limit is charged
+				// for each Ethereum message included in the failed envelope.
+				envelope, err := decode(block.Block.Txs[i])
+				if err != nil {
+					return nil, fmt.Errorf("Cosmos tx %d: %w", i, err)
+				}
+				for _, m := range envelope.GetMsgs() {
+					if msg, ok := m.(*evm.MsgEthereumTx); ok {
+						key := msg.AsTransaction().Hash().Hex()
+						if _, exists := cons[key]; exists {
+							return nil, fmt.Errorf("duplicate EVM receipt %s", key)
+						}
+						cons[key] = &consensusReceipt{GasUsed: msg.GetGas()}
+					}
+				}
 			}
+			continue
 		}
-		cons[key] = &consensusReceipt{
-			Status:  status == hexutil.Uint(ethtypes.ReceiptStatusSuccessful),
-			GasUsed: uint64(gasUsed),
-			Logs:    logs,
+		var msgs sdk.TxMsgData
+		if err := msgs.Unmarshal(tx.Data); err != nil {
+			return nil, fmt.Errorf("Cosmos result %d: %w", i, err)
+		}
+		for j, msg := range msgs.MsgResponses {
+			if msg == nil {
+				return nil, fmt.Errorf("missing response at %d/%d", i, j)
+			}
+			if msg.TypeUrl != "/ethermint.evm.v1.MsgEthereumTxResponse" {
+				continue
+			}
+			var receipt evm.MsgEthereumTxResponse
+			if err := receipt.Unmarshal(msg.Value); err != nil {
+				return nil, err
+			}
+			key := strings.ToLower(receipt.Hash)
+			if _, ok := cons[key]; ok {
+				return nil, fmt.Errorf("duplicate EVM receipt %s", key)
+			}
+			for n, l := range receipt.Logs {
+				if l == nil {
+					return nil, fmt.Errorf("missing log %d for %s", n, key)
+				}
+			}
+			cons[key] = &consensusReceipt{Status: !receipt.Failed(), GasUsed: receipt.GasUsed, Logs: evm.LogsToEthereum(receipt.Logs)}
 		}
 	}
 	return cons, nil
+}
+
+func (msg includedMessage) receiptTrace(receipt *consensusReceipt) (dtypes.TraceResult, error) {
+	var tr dtypes.TraceResult
+	if msg.blockGasError != "" && len(msg.Trace) == 0 {
+		// The keeper did not observe an EVM call for this included message.
+		return tr, nil
+	}
+	if err := json.Unmarshal(msg.Trace, &tr); err != nil {
+		return tr, err
+	}
+	if msg.blockGasError != "" {
+		for i := range tr.Traces {
+			if len(tr.Traces[i].TraceAddress) == 0 {
+				tr.Traces[i].Error = msg.blockGasError
+			}
+		}
+		tr.ErrorTraces = append(tr.Traces, tr.ErrorTraces...)
+		tr.ErrorEvents = append(tr.Events, tr.ErrorEvents...)
+		tr.Traces, tr.Events, tr.StorageContracts = nil, nil, nil
+	}
+	return tr, checkReceipt(&tr, msg.Hash.Hex(), receipt)
 }
 
 // checkReceipt leaves call-frame gas and ownership intact. Committed log
