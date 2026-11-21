@@ -18,6 +18,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"github.com/evmos/ethermint/debank/replay"
 	"net/http"
 	"time"
 
@@ -83,7 +84,8 @@ func StartJSONRPC(
 	allowUnprotectedTxs := config.JSONRPC.AllowUnprotectedTxs
 	rpcAPIArr := config.JSONRPC.API
 
-	apis := rpc.GetRPCAPIs(srvCtx, clientCtx, rpcStream, allowUnprotectedTxs, indexer, rpcAPIArr)
+	executor, _ := app.(replay.Executor)
+	apis := rpc.GetRPCAPIs(srvCtx, clientCtx, rpcStream, allowUnprotectedTxs, indexer, rpcAPIArr, executor)
 
 	for _, api := range apis {
 		if err := rpcServer.RegisterName(api.Namespace, api.Service); err != nil {
