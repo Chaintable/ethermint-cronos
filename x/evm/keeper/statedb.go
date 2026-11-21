@@ -231,6 +231,9 @@ func (k *Keeper) SetNonce(addr common.Address, nonce uint64) {
 	}
 
 	ctx := k.Ctx()
+	if k.activeTrace != nil {
+		k.activeTrace.OnAccountChange(addr)
+	}
 
 	cosmosAddr := sdk.AccAddress(addr.Bytes())
 	account := k.accountKeeper.GetAccount(ctx, cosmosAddr)
@@ -330,6 +333,9 @@ func (k *Keeper) SetCode(addr common.Address, code []byte) {
 	}
 
 	ctx := k.Ctx()
+	if k.activeTrace != nil {
+		k.activeTrace.OnAccountChange(addr)
+	}
 
 	if bytes.Equal(code, types.EmptyCodeHash) {
 		k.Logger(ctx).Debug("passed in EmptyCodeHash, but expected empty code")
@@ -494,6 +500,9 @@ func (k *Keeper) SetState(addr common.Address, key, value common.Hash) {
 	}
 
 	ctx := k.Ctx()
+	if k.activeTrace != nil {
+		k.activeTrace.OnStorageChange(addr, key, doGetState(ctx.WithGasMeter(sdk.NewInfiniteGasMeter()), k.storeKey, addr, key))
+	}
 	store := prefix.NewStore(ctx.KVStore(k.storeKey), types.AddressStoragePrefix(addr))
 
 	action := "updated"
@@ -523,6 +532,9 @@ func (k *Keeper) Suicide(addr common.Address) bool {
 	}
 
 	ctx := k.Ctx()
+	if k.activeTrace != nil {
+		k.activeTrace.OnAccountChange(addr)
+	}
 
 	prev := k.HasSuicided(addr)
 	if prev {
@@ -597,9 +609,9 @@ func (k *Keeper) Exist(addr common.Address) bool {
 }
 
 // Empty returns true if the address meets the following conditions:
-// 	- nonce is 0
-// 	- balance amount for evm denom is 0
-// 	- account code hash is empty
+//   - nonce is 0
+//   - balance amount for evm denom is 0
+//   - account code hash is empty
 //
 // Non-ethereum accounts are considered not empty
 func (k *Keeper) Empty(addr common.Address) bool {
@@ -638,10 +650,10 @@ func (k *Keeper) Empty(addr common.Address) bool {
 // PrepareAccessList handles the preparatory steps for executing a state transition with
 // regards to both EIP-2929 and EIP-2930:
 //
-// 	- Add sender to access list (2929)
-// 	- Add destination to access list (2929)
-// 	- Add precompiles to access list (2929)
-// 	- Add the contents of the optional tx access list (2930)
+//   - Add sender to access list (2929)
+//   - Add destination to access list (2929)
+//   - Add precompiles to access list (2929)
+//   - Add the contents of the optional tx access list (2930)
 //
 // This method should only be called if Yolov3/Berlin/2929+2930 is applicable at the current number.
 func (k *Keeper) PrepareAccessList(sender common.Address, dest *common.Address, precompiles []common.Address, txAccesses ethtypes.AccessList) {
@@ -772,6 +784,9 @@ func (k *Keeper) AddLog(log *ethtypes.Log) {
 	log.Index = uint(k.GetLogSizeTransient())
 	k.IncreaseLogSizeTransient()
 	k.AddLogTransient(log)
+	if k.activeTrace != nil {
+		k.activeTrace.OnLog(log)
+	}
 
 	k.Logger(ctx).Debug(
 		"log added",

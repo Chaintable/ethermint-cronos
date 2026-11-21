@@ -2,6 +2,7 @@ package keeper
 
 import (
 	"bytes"
+	"github.com/tharsis/ethermint/debank/tracer"
 	"math/big"
 
 	"github.com/cosmos/cosmos-sdk/codec"
@@ -50,7 +51,9 @@ type Keeper struct {
 	eip155ChainID *big.Int
 
 	// Tracer used to collect execution traces from the EVM transaction execution
-	tracer string
+	tracer      string
+	replaySink  func(ReplayTransaction, error)
+	activeTrace *tracer.ExecutionTracer
 
 	// EVM Hooks for tx post-processing
 	hooks types.EvmHooks
