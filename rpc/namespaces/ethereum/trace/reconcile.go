@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -66,6 +67,28 @@ func (api *API) loadConsensus(blockHeight rpctypes.BlockNumber) (map[string]*con
 		}
 	}
 	return cons, nil
+}
+
+func (msg includedMessage) receiptTrace(receipt *consensusReceipt) (dtypes.TraceResult, error) {
+	var tr dtypes.TraceResult
+	if msg.blockGasError != "" && len(msg.Trace) == 0 {
+		// The keeper did not observe an EVM call for this included message.
+		return tr, nil
+	}
+	if err := json.Unmarshal(msg.Trace, &tr); err != nil {
+		return tr, err
+	}
+	if msg.blockGasError != "" {
+		for i := range tr.Traces {
+			if len(tr.Traces[i].TraceAddress) == 0 {
+				tr.Traces[i].Error = msg.blockGasError
+			}
+		}
+		tr.ErrorTraces = append(tr.Traces, tr.ErrorTraces...)
+		tr.ErrorEvents = append(tr.Events, tr.ErrorEvents...)
+		tr.Traces, tr.Events, tr.StorageContracts = nil, nil, nil
+	}
+	return tr, checkReceipt(&tr, msg.Hash.Hex(), receipt)
 }
 
 // checkReceipt leaves call-frame gas and ownership intact. Committed log

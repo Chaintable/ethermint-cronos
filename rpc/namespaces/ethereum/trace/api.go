@@ -221,7 +221,7 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	}, nil
 }
 
-func assembleBlockFile(block map[string]interface{}, transactions []interface{}, ethMsgs []*evmtypes.MsgEthereumTx, baseFee *big.Int, observed []replay.Transaction, consensus map[string]*consensusReceipt) (*dtypes.BlockFile, map[common.Address]struct{}, error) {
+func assembleBlockFile(block map[string]interface{}, transactions []interface{}, ethMsgs []*evmtypes.MsgEthereumTx, baseFee *big.Int, observed []includedMessage, consensus map[string]*consensusReceipt) (*dtypes.BlockFile, map[common.Address]struct{}, error) {
 	if len(ethMsgs) != len(transactions) || len(observed) != len(ethMsgs) || len(consensus) != len(ethMsgs) {
 		return nil, nil, fmt.Errorf("EVM count mismatch: %d msgs, %d RPC txs, %d observations, %d receipts", len(ethMsgs), len(transactions), len(observed), len(consensus))
 	}
@@ -246,11 +246,8 @@ func assembleBlockFile(block map[string]interface{}, transactions []interface{},
 		if receipt == nil {
 			return nil, nil, fmt.Errorf("tx[%d] missing receipt", i)
 		}
-		var traceResult dtypes.TraceResult
-		if err := json.Unmarshal(obs.Trace, &traceResult); err != nil {
-			return nil, nil, fmt.Errorf("tx[%d] trace: %w", i, err)
-		}
-		if err := checkReceipt(&traceResult, obs.Hash.Hex(), receipt); err != nil {
+		traceResult, err := obs.receiptTrace(receipt)
+		if err != nil {
 			return nil, nil, fmt.Errorf("tx[%d]: %w", i, err)
 		}
 		tx := dtracer.BuildPipelineTransaction(realTx, int64(i), rt.From, new(big.Int).SetUint64(receipt.GasUsed), baseFee, receipt.Status)
