@@ -1,6 +1,8 @@
 package keeper
 
 import (
+	"github.com/tendermint/tendermint/crypto/tmhash"
+	replaytrace "github.com/tharsis/ethermint/debank/tracer"
 	"math/big"
 
 	"github.com/palantir/stacktrace"
@@ -126,7 +128,7 @@ func (k Keeper) GetHashFn() vm.GetHashFunc {
 // ApplyTransaction runs and attempts to perform a state transition with the given transaction (i.e Message), that will
 // only be persisted (committed) to the underlying KVStore if the transaction does not fail.
 //
-// Gas tracking
+// # Gas tracking
 //
 // Ethereum consumes gas according to the EVM opcodes instead of general reads and writes to store. Because of this, the
 // state transition needs to ignore the SDK gas consumption mechanism defined by the GasKVStore and instead consume the
@@ -172,6 +174,11 @@ func (k *Keeper) ApplyTransaction(tx *ethtypes.Transaction) (*types.MsgEthereumT
 
 	// create an ethereum EVM instance and run the message
 	tracer := types.NewTracer(k.tracer, msg, ethCfg, ctx.BlockHeight())
+	if k.replaySink != nil {
+		k.activeTrace = replaytrace.NewExecutionTracer(tx.Hash())
+		defer func() { k.activeTrace = nil }()
+		tracer = k.activeTrace
+	}
 	evm := k.NewEVM(msg, ethCfg, params, coinbase, tracer)
 
 	txHash := tx.Hash()
@@ -239,6 +246,13 @@ func (k *Keeper) ApplyTransaction(tx *ethtypes.Transaction) (*types.MsgEthereumT
 	k.IncreaseTxIndexTransient()
 
 	// update the gas used after refund
+	if k.activeTrace != nil {
+		// Isolate observation reads from the transaction gas meter and keeper errors.
+		reader := *k
+		reader.ctxStack.Reset(k.Ctx().WithGasMeter(sdk.NewInfiniteGasMeter()))
+		trace, err := k.activeTrace.Result(&reader, res.VmError)
+		k.replaySink(ReplayTransaction{MessageResult: res, PreRollbackEvents: k.activeTrace.PreRollbackEvents, CosmosHash: tmhash.Sum(ctx.TxBytes()), Hash: txHash, GasUsed: res.GasUsed, VmError: res.VmError, Trace: trace, RootOutput: k.activeTrace.RootOutput}, err)
+	}
 	k.resetGasMeterAndConsumeGas(res.GasUsed)
 	return res, nil
 }
@@ -247,12 +261,12 @@ func (k *Keeper) ApplyTransaction(tx *ethtypes.Transaction) (*types.MsgEthereumT
 // If the message fails, the VM execution error with the reason will be returned to the client
 // and the transaction won't be committed to the store.
 //
-// Reverted state
+// # Reverted state
 //
 // The transaction is never "reverted" since there is no snapshot + rollback performed on the StateDB.
 // Only successful transactions are written to the store during DeliverTx mode.
 //
-// Prechecks and Preprocessing
+// # Prechecks and Preprocessing
 //
 // All relevant state transition prechecks for the MsgEthereumTx are performed on the AnteHandler,
 // prior to running the transaction against the state. The prechecks run are the following:
@@ -268,7 +282,7 @@ func (k *Keeper) ApplyTransaction(tx *ethtypes.Transaction) (*types.MsgEthereumT
 //
 // 1. set up the initial access list (iff fork > Berlin)
 //
-// Query mode
+// # Query mode
 //
 // The gRPC query endpoint from 'eth_call' calls this method in query mode, and since the query handler don't call AnteHandler,
 // so we don't do real gas refund in that case.
