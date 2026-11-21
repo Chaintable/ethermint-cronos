@@ -172,8 +172,8 @@ func CanonicalStateAt(source StateChangeSource, version int64, evmDenom string) 
 		return types.TransactionStateDiff{}, fmt.Errorf("state change source is required")
 	}
 	latest := source.LatestVersion()
-	if latest <= version {
-		return types.TransactionStateDiff{}, fmt.Errorf("changeset version %d is not behind latest version %d", version, latest)
+	if latest < version {
+		return types.TransactionStateDiff{}, fmt.Errorf("changeset version %d is ahead of committed version %d", version, latest)
 	}
 	if !source.VersionExists(version - 1) {
 		return types.TransactionStateDiff{}, fmt.Errorf("previous changeset version %d is unavailable", version-1)

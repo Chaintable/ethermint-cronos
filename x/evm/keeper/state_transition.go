@@ -160,13 +160,18 @@ func (k Keeper) GetHashFn(ctx sdk.Context, headerHashNum uint64) vm.GetHashFunc 
 // returning.
 //
 // For relevant discussion see: https://github.com/cosmos/cosmos-sdk/discussions/9072
-func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) (*types.EVMResult, error) {
+func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) (result *types.EVMResult, err error) {
 	ethTx := msgEth.AsTransaction()
 	cfg, err := k.EVMConfig(ctx, k.eip155ChainID, ethTx.Hash())
 	if err != nil {
 		return nil, errorsmod.Wrap(err, "failed to load evm config")
 	}
 
+	if k.transactionObserver != nil {
+		var finished func(*types.EVMResult, error)
+		cfg.Tracer, finished = k.transactionObserver(ctx, ethTx.Hash())
+		defer func() { finished(result, err) }()
+	}
 	msg := msgEth.AsMessage(cfg.BaseFee)
 	// snapshot to contain the tx processing and post processing in same scope
 	var commit func()
