@@ -87,37 +87,12 @@ func checkMessage(obs keeper.ReplayTransaction, res *evm.MsgEthereumTxResponse) 
 
 func (r *BlockResult) Bundle(decoder sdk.TxDecoder, miner common.Address, limit int64, baseFee *big.Int, diff wire.TransactionStateDiff, observations []keeper.ReplayTransaction) (*wire.DebankOutPutJs, error) {
 	var txHashes []interface{}
-	valid := make(map[string]bool)
-	for i, raw := range r.Block.Txs {
-		if r.DeliverTxs[i].Code == 0 {
-			valid[string(raw.Hash())] = true
-		}
-	}
-	for _, obs := range observations {
-		if valid[string(obs.CosmosHash)] {
-			txHashes = append(txHashes, obs.Hash)
-		}
-	}
-	block, err := r.format(miner, limit, baseFee, txHashes)
-	if err != nil {
-		return nil, err
-	}
-	header := tracer.BuildPilelineBlockHeader(block)
-	var parent common.Hash
-	if r.Parent != nil {
-		parent = common.BytesToHash(r.Parent.AppHash)
-	}
-	stateDiff := tracer.BuildBlockStateDiff(parent, header.StateRoot, diff)
-	encoded, err := rlp.EncodeToBytes(&stateDiff)
-	if err != nil {
-		return nil, err
-	}
-	file := &wire.BlockFile{Block: tracer.BuildPipelineBlock(block), Txs: []wire.Transaction{}, Events: []wire.Event{}, ErrorEvents: []wire.Event{}, Traces: []wire.Trace{}, ErrorTraces: []wire.Trace{}, StorageContracts: []string{}}
+	file := &wire.BlockFile{Txs: []wire.Transaction{}, Events: []wire.Event{}, ErrorEvents: []wire.Event{}, Traces: []wire.Trace{}, ErrorTraces: []wire.Trace{}, StorageContracts: []string{}}
 	addresses := bankdiff.CoinTouchedAddresses(r.ABCIResponses, "basecro")
 	offset := 0
 	for i, raw := range r.Block.Txs {
 		result := r.DeliverTxs[i]
-		if result.Code != 0 {
+		if !rpc.TxSuccessOrExceedsBlockGasLimit(result) {
 			// A later Cosmos message can roll back earlier EVM execution in this envelope.
 			for offset < len(observations) && bytes.Equal(raw.Hash(), observations[offset].CosmosHash) {
 				offset++
@@ -137,28 +112,49 @@ func (r *BlockResult) Bundle(decoder sdk.TxDecoder, miner common.Address, limit 
 			if !ok {
 				continue
 			}
-			if offset >= len(observations) || j >= len(responses.MsgResponses) || responses.MsgResponses[j] == nil {
-				return nil, fmt.Errorf("missing EVM result for Cosmos message %d/%d", i, j)
-			}
 			tx := ethMsg.AsTransaction()
-			obs := observations[offset]
-			offset++
-			if obs.Hash != tx.Hash() || !bytes.Equal(obs.CosmosHash, raw.Hash()) {
-				return nil, fmt.Errorf("observation identity mismatch at %d/%d", i, j)
-			}
-			var receipt evm.MsgEthereumTxResponse
-			if err := receipt.Unmarshal(responses.MsgResponses[j].Value); err != nil {
-				return nil, err
-			}
-			traced, err := checkMessage(obs, &receipt)
-			if err != nil {
-				return nil, err
+			txHashes = append(txHashes, tx.Hash())
+			var traced wire.TraceResult
+			gasUsed, success := tx.Gas(), false
+			if result.Code == 0 {
+				if offset >= len(observations) || j >= len(responses.MsgResponses) || responses.MsgResponses[j] == nil {
+					return nil, fmt.Errorf("missing EVM result for Cosmos message %d/%d", i, j)
+				}
+				obs := observations[offset]
+				offset++
+				if obs.Hash != tx.Hash() || !bytes.Equal(obs.CosmosHash, raw.Hash()) {
+					return nil, fmt.Errorf("observation identity mismatch at %d/%d", i, j)
+				}
+				var receipt evm.MsgEthereumTxResponse
+				if err := receipt.Unmarshal(responses.MsgResponses[j].Value); err != nil {
+					return nil, err
+				}
+				traced, err = checkMessage(obs, &receipt)
+				if err != nil {
+					return nil, err
+				}
+				gasUsed, success = receipt.GasUsed, !receipt.Failed()
+			} else if offset < len(observations) && bytes.Equal(observations[offset].CosmosHash, raw.Hash()) && observations[offset].Hash == tx.Hash() {
+				// Block gas exhaustion rolls back message writes. A message that
+				// reached the EVM still has an attempted call tree.
+				if err := json.Unmarshal(observations[offset].Trace, &traced); err != nil {
+					return nil, err
+				}
+				offset++
+				for k := range traced.Traces {
+					if len(traced.Traces[k].TraceAddress) == 0 {
+						traced.Traces[k].Error = result.Log
+					}
+				}
+				traced.ErrorTraces = append(traced.Traces, traced.ErrorTraces...)
+				traced.ErrorEvents = append(traced.Events, traced.ErrorEvents...)
+				traced.Traces, traced.Events, traced.StorageContracts = nil, nil, nil
 			}
 			sender, err := eth.Sender(eth.LatestSignerForChainID(big.NewInt(25)), tx)
 			if err != nil {
 				return nil, err
 			}
-			file.Txs = append(file.Txs, tracer.BuildPipelineTransaction(tx, int64(len(file.Txs)), sender, new(big.Int).SetUint64(receipt.GasUsed), baseFee, !receipt.Failed()))
+			file.Txs = append(file.Txs, tracer.BuildPipelineTransaction(tx, int64(len(file.Txs)), sender, new(big.Int).SetUint64(gasUsed), baseFee, success))
 			addresses[sender] = struct{}{}
 			if to := tx.To(); to != nil {
 				addresses[*to] = struct{}{}
@@ -179,5 +175,20 @@ func (r *BlockResult) Bundle(decoder sdk.TxDecoder, miner common.Address, limit 
 		file.StorageContracts = append(file.StorageContracts, strings.ToLower(addr.Hex()))
 	}
 	sort.Strings(file.StorageContracts)
+	block, err := r.format(miner, limit, baseFee, txHashes)
+	if err != nil {
+		return nil, err
+	}
+	header := tracer.BuildPilelineBlockHeader(block)
+	var parent common.Hash
+	if r.Parent != nil {
+		parent = common.BytesToHash(r.Parent.AppHash)
+	}
+	stateDiff := tracer.BuildBlockStateDiff(parent, header.StateRoot, diff)
+	encoded, err := rlp.EncodeToBytes(&stateDiff)
+	if err != nil {
+		return nil, err
+	}
+	file.Block = tracer.BuildPipelineBlock(block)
 	return &wire.DebankOutPutJs{BlockFile: file, Header: header, StateDiff: encoded, ValidationHash: file.Validation().ValidationHash}, nil
 }
