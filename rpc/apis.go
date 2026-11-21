@@ -17,6 +17,8 @@ package rpc
 
 import (
 	"fmt"
+	"github.com/evmos/ethermint/debank/replay"
+	"github.com/evmos/ethermint/rpc/namespaces/ethereum/trace"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/server"
@@ -161,10 +163,17 @@ func GetRPCAPIs(ctx *server.Context,
 	allowUnprotectedTxs bool,
 	indexer ethermint.EVMTxIndexer,
 	selectedAPIs []string,
+	executor ...replay.Executor,
 ) []rpc.API {
 	var apis []rpc.API
 
 	for _, ns := range selectedAPIs {
+		if ns == "trace" && len(executor) > 0 && executor[0] != nil {
+			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer)
+			apis = append(apis, rpc.API{Namespace: "trace", Version: apiVersion, Service: trace.NewAPI(ctx, ctx.Logger, evmBackend, clientCtx, executor[0]), Public: true})
+			continue
+		}
+
 		if creator, ok := apiCreators[ns]; ok {
 			apis = append(apis, creator(ctx, clientCtx, stream, allowUnprotectedTxs, indexer)...)
 		} else {

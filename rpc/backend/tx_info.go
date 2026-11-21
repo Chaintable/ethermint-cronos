@@ -287,7 +287,7 @@ func (b *Backend) GetTransactionReceipt(hash common.Hash, resBlock *tmrpctypes.R
 	}
 
 	if logs == nil {
-		receipt["logs"] = [][]*ethtypes.Log{}
+		receipt["logs"] = []*ethtypes.Log{}
 	}
 
 	// If the ContractAddress is 20 0x0 bytes, assume it is not a contract creation
