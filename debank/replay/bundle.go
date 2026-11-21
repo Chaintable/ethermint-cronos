@@ -64,11 +64,15 @@ func checkMessage(obs keeper.ReplayTransaction, res *evm.MsgEthereumTxResponse) 
 	if len(roots) == 0 || len(roots[0].TraceAddress) != 0 || !bytes.Equal(obs.RootOutput, res.Ret) {
 		return t, fmt.Errorf("trace root mismatch for %s", obs.Hash)
 	}
-	if len(res.Logs) != len(t.Events) {
+	events := t.Events
+	if res.VmError == evm.ErrPostTxProcessing.Error() {
+		events = obs.PreRollbackEvents
+	}
+	if len(res.Logs) != len(events) {
 		return t, fmt.Errorf("log count mismatch for %s", obs.Hash)
 	}
 	for i, l := range res.Logs {
-		e := t.Events[i]
+		e := events[i]
 		topics := e.Topics
 		if e.Selector != "" {
 			topics = append([]string{e.Selector}, topics...)
