@@ -61,7 +61,7 @@ func checkMessage(obs keeper.ReplayTransaction, res *evm.MsgEthereumTxResponse) 
 	if res.Failed() {
 		roots = t.ErrorTraces
 	}
-	if len(roots) == 0 || len(roots[0].TraceAddress) != 0 || !bytes.Equal(roots[0].Output, res.Ret) {
+	if len(roots) == 0 || len(roots[0].TraceAddress) != 0 || !bytes.Equal(obs.RootOutput, res.Ret) {
 		return t, fmt.Errorf("trace root mismatch for %s", obs.Hash)
 	}
 	if len(res.Logs) != len(t.Events) {

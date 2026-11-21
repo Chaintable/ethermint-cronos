@@ -9,6 +9,7 @@ type ReplayTransaction struct {
 	CosmosHash []byte
 	Hash       common.Hash
 	GasUsed    uint64
+	RootOutput []byte
 	VmError    string
 	Trace      json.RawMessage
 }

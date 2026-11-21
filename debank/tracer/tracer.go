@@ -84,6 +84,8 @@ func (f *callFrame) processOutput(output []byte, err error, reverted bool) {
 // ExecutionTracer records calls and StateDB writes during one canonical Ethereum message.
 type ExecutionTracer struct {
 	evmtypes.NoOpTracer
+	// RootOutput preserves the VM return bytes before call-frame error formatting.
+	RootOutput  []byte
 	nestedOp    vm.OpCode
 	nestedHooks bool
 	callstack   []callFrame
@@ -149,6 +151,7 @@ func (t *ExecutionTracer) CaptureStart(env *vm.EVM, from, to common.Address, cre
 	t.CaptureEnter(op, from, to, input, gas, value)
 }
 func (t *ExecutionTracer) CaptureEnd(output []byte, gasUsed uint64, _ time.Duration, err error) {
+	t.RootOutput = common.CopyBytes(output)
 	t.captureEnd(output, gasUsed, err, err != nil)
 }
 func (t *ExecutionTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
