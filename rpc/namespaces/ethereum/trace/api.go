@@ -144,7 +144,6 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	if err != nil {
 		return nil, err
 	}
-	req.BlockFileOnly = blockFileOnly
 	result, err := api.executor.ReplayBlock(ctx, req)
 	if err != nil {
 		return nil, err
