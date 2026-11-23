@@ -3,6 +3,7 @@ package replay
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -56,4 +57,11 @@ func TestRequestJSON(t *testing.T) {
 	var got Request
 	require.NoError(t, sonic.ConfigStd.Unmarshal(data, &got))
 	require.Equal(t, req, got)
+}
+
+func TestReplayErrorFrame(t *testing.T) {
+	var wire bytes.Buffer
+	require.NoError(t, WriteError(&wire, errors.New("parent commit mismatch")))
+	_, err := ReadResult(&wire)
+	require.EqualError(t, err, "parent commit mismatch")
 }

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -43,6 +44,7 @@ type Result struct {
 type workerResult struct {
 	Finalize     []byte
 	Transactions []Transaction
+	Error        string `json:",omitempty"`
 }
 
 func WriteResult(w io.Writer, r Result) error {
@@ -50,13 +52,21 @@ func WriteResult(w io.Writer, r Result) error {
 	if err != nil {
 		return err
 	}
-	return sonic.ConfigStd.NewEncoder(w).Encode(workerResult{b, r.Transactions})
+	return sonic.ConfigStd.NewEncoder(w).Encode(workerResult{Finalize: b, Transactions: r.Transactions})
+}
+
+// WriteError reports a failed replay in place of a result.
+func WriteError(w io.Writer, err error) error {
+	return sonic.ConfigStd.NewEncoder(w).Encode(workerResult{Error: err.Error()})
 }
 
 func ReadResult(r io.Reader) (*Result, error) {
 	var wire workerResult
 	if err := sonic.ConfigStd.NewDecoder(r).Decode(&wire); err != nil {
 		return nil, err
+	}
+	if wire.Error != "" {
+		return nil, errors.New(wire.Error)
 	}
 	res := new(abci.ResponseFinalizeBlock)
 	if err := res.Unmarshal(wire.Finalize); err != nil {
