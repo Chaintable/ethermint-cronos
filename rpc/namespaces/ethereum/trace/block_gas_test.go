@@ -35,15 +35,20 @@ func TestBlockGasFailureTrace(t *testing.T) {
 	result := &abci.ExecTxResult{Code: 11, Log: rpctypes.ExceedBlockGasLimitError, GasUsed: 950977623}
 	results := &ctypes.ResultBlockResults{TxsResults: []*abci.ExecTxResult{result}}
 	r := &replay.Result{Finalize: &abci.ResponseFinalizeBlock{TxResults: results.TxsResults}}
+	observe := func(trace wire.TraceResult) {
+		raw, err := json.Marshal(trace)
+		require.NoError(t, err)
+		r.Transactions = []replay.Transaction{{Hash: tx.Hash(), Trace: raw, GasUsed: 21000}}
+	}
 	for _, captured := range []bool{false, true} {
 		receipts := map[string]*consensusReceipt{tx.Hash().Hex(): {GasUsed: tx.Gas()}}
 		r.Transactions = nil
 		if captured {
-			raw, err := json.Marshal(wire.TraceResult{
-				Traces: []wire.Trace{{TxID: tx.Hash().Hex()}}, Events: []wire.Event{{ID: "attempt"}},
+			// The worker finalizes the trace with the Cosmos error, so the attempt is already reverted.
+			observe(wire.TraceResult{
+				ErrorTraces: []wire.Trace{{TxID: tx.Hash().Hex(), Error: "execution reverted"}},
+				ErrorEvents: []wire.Event{{ID: "attempt"}},
 			})
-			require.NoError(t, err)
-			r.Transactions = []replay.Transaction{{Hash: tx.Hash(), Trace: raw, GasUsed: 21000}}
 		}
 		included, err := api.canonicalObservations(block, results, r, receipts)
 		require.NoError(t, err)
@@ -64,6 +69,13 @@ func TestBlockGasFailureTrace(t *testing.T) {
 			require.Empty(t, tr.ErrorEvents)
 		}
 	}
+	// A trace finalized as committed contradicts the failed receipt.
+	observe(wire.TraceResult{Traces: []wire.Trace{{TxID: tx.Hash().Hex()}}})
+	receipts := map[string]*consensusReceipt{tx.Hash().Hex(): {GasUsed: tx.Gas()}}
+	rejected, err := api.canonicalObservations(block, results, r, receipts)
+	require.NoError(t, err)
+	_, err = rejected[0].receiptTrace(receipts[tx.Hash().Hex()])
+	require.Error(t, err)
 	result.Log = "no block gas left to run tx: out of gas"
 	r.Transactions = nil
 	included, err := api.canonicalObservations(block, results, r, nil)
