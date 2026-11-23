@@ -37,22 +37,6 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ## Unreleased
 
-* (rpc) Merge the v0.24 maintenance fixes used by Cronos v1.8.1, preserving the DeBank writer integration.
-
-* (debank) Support Cronos v1.8 with the committed IAVL state-diff emitter,
-  consensus-guided traces, ErrTrace classification, and serialized live state reads.
-
-* (debank) [Chaintable#15](https://github.com/Chaintable/ethermint-cronos/pull/15) serialize live IAVL state-diff reads with block execution.
-* (evm) [#997](https://github.com/crypto-org-chain/ethermint/pull/997) fix(evm): add optional `traceReplay` trace-config flag to skip gas deduction during tracing and bypass a legacy bug.
-* (server) [#938](https://github.com/crypto-org-chain/ethermint/pull/938) feat(server): add `index-eth-tx range <start> <end>` subcommand for targeted block re-indexing.
-* (rpc) [#923](https://github.com/crypto-org-chain/ethermint/pull/923) fix(rpc): include block-gas-exceeded txs in `eth_getBlockReceipts` and use block-wide eth `cumulativeGasUsed`.
-* (rpc) [#885](https://github.com/crypto-org-chain/ethermint/pull/885) enforce ws origin allowlist and namespace gating.
-* (rpc) [#870](https://github.com/crypto-org-chain/ethermint/pull/870) fix(rpc): fix eth_getBlockReceipts crash
-* (ante) [#829](https://github.com/crypto-org-chain/ethermint/pull/829) fix: validate payload messages in legacy EIP-712
-* (evm) [#875](https://github.com/crypto-org-chain/ethermint/pull/875) fix: prevent nil pointer dereference on BLOBBASEFEE opcode 
-* (rpc) [#869](https://github.com/crypto-org-chain/ethermint/pull/869) feat(RPC): implement `eth_simulateV1` RPC
-* (server) [#985](https://github.com/crypto-org-chain/ethermint/pull/985) feat(server): make JSON-RPC batch limits configurable.
-* (evm) [#986](https://github.com/crypto-org-chain/ethermint/pull/986) fix(evm): align debug_trace fee with virtual ante path
 ### API Breaking
 
 * (rpc) [#1132](https://github.com/crypto-org-chain/ethermint/pull/1132) fix(rpc): add `BlockTimeByHeight` to the `backend.EVMBackend` interface and `BlockTimesByRange` to the `filters.Backend` interface, to fill the `blockTimestamp` of logs.
@@ -61,6 +45,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ### Improvements
 
+* (debank) Add `trace_debankBlock`: replay the full Cosmos block in an isolated application, verify the result against the committed block results and the next header, and build the DeBank block file. State diffs are read from the committed acc/bank/evm IAVL change sets under the consensus lock.
 * (rpc) [#1010](https://github.com/crypto-org-chain/ethermint/pull/1010) test(rpc): validate JSON-RPC schema against ethereum/execution-apis fixtures.
 * (rpc) [#992](https://github.com/crypto-org-chain/ethermint/pull/992) test(rpc): improve test coverage for GetTransactionByBlock* methods.
 * (rpc) [#996](https://github.com/crypto-org-chain/ethermint/pull/996) refactor(rpc): fix type consistency in `buildReceiptDirect` and `GetTransactionByBlockHashAndIndex`.
@@ -132,7 +117,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 * (rpc) [#879](https://github.com/crypto-org-chain/ethermint/pull/879) fix(eth_sign): apply EIP-191 prefix to domain-separate personal signatures from transaction signatures.
 * (rpc) [#861](https://github.com/crypto-org-chain/ethermint/pull/861) fix(rpc): Missing boundary checkin GetTransactionReceipt.
 * (ante) [#849](https://github.com/crypto-org-chain/ethermint/pull/849) fix(ante): fix nonce cache stage writes until ante chain succeeds and capacity handling.
-* (deps) [#857](https://github.com/crypto-org-chain/ethermint/pull/857) feat(cosmos-sdk): Optimize staking end-block queue through using pending queue slots instead of iterators.
+* (deps) [#857](https://github.com/crypto-org-chain/ethermint/pull/857) feat(cosmos-sdk): Optimize staking end-block queue through using pending queue slots instead of iterators. 
 * (ante) [#853](https://github.com/crypto-org-chain/ethermint/pull/853) refactor: remove redundant incarnationCache for sig verification
 * (deps) [#489](https://github.com/crypto-org-chain/ethermint/pull/489) Update cosmos-sdk to `v0.53.4`.
 * (ante) [#829](https://github.com/crypto-org-chain/ethermint/pull/829) fix: validate payload messages in legacy EIP-712
@@ -170,8 +155,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 * (evm) [#809](https://github.com/crypto-org-chain/ethermint/pull/809) fix: relax preinstall rules
 * (rpc) [#814](https://github.com/crypto-org-chain/ethermint/pull/814) fix: estimate gas not accurate
 * (evm) [#815](https://github.com/crypto-org-chain/ethermint/pull/815) fix: nonce increments on EIP-7702 contract creation
-* (evm) [#822](https://github.com/crypto-org-chain/ethermint/pull/822) refactor: replace MsgEthereumTxResponse with EthCallResponse in EVM calls
-* (rpc) [#917](https://github.com/crypto-org-chain/ethermint/pull/917) fix(rpc): return InvalidParams error when `eth_getLogs` toBlock exceeds chain head.
+* (evm) [#822](https://github.com/crypto-org-chain/ethermint/pull/822) refactor:replace MsgEthereumTxResponse with EthCallResponse in EVM calls 
 
 ## [v0.22.0] - 2025-08-12
 
