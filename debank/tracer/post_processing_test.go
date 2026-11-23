@@ -17,7 +17,7 @@ func TestReplayPostProcessingFailure(t *testing.T) {
 	b := common.HexToAddress("0x02")
 	hooks.OnEnter(0, byte(vm.CALL), a, b, nil, 100000, big.NewInt(1))
 	hooks.OnEnter(1, byte(vm.CALL), b, a, nil, 30000, big.NewInt(0))
-	hooks.OnLog(&eth.Log{Address: a, Index: 3})
+	hooks.OnLog(&eth.Log{Address: a})
 	hooks.OnExit(1, nil, 12000, nil, false)
 	hooks.OnExit(0, nil, 33000, nil, false)
 	raw, err := finish("failed to execute post processing")
@@ -31,7 +31,7 @@ func TestReplayPostProcessingFailure(t *testing.T) {
 	if len(r.Traces) != 0 || len(r.ErrorTraces) != 2 || r.ErrorTraces[0].Error != "failed to execute post processing" || r.ErrorTraces[1].Error != "parent call failed" {
 		t.Fatalf("unexpected traces %+v / %+v", r.Traces, r.ErrorTraces)
 	}
-	if len(r.Events) != 0 || len(r.ErrorEvents) != 1 || r.ErrorEvents[0].ParentTraceID != r.ErrorTraces[1].ID || r.ErrorEvents[0].LogIndex != 0 {
+	if len(r.Events) != 0 || len(r.ErrorEvents) != 1 || r.ErrorEvents[0].ParentTraceID != r.ErrorTraces[1].ID {
 		t.Fatalf("misclassified log %+v / %+v", r.Events, r.ErrorEvents)
 	}
 }

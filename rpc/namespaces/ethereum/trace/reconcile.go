@@ -79,12 +79,14 @@ func (msg includedMessage) receiptTrace(receipt *consensusReceipt) (dtypes.Trace
 		return tr, err
 	}
 	if msg.blockGasError != "" {
-		// The worker already traced the message as reverted; the root reports the Cosmos error.
-		for i := range tr.ErrorTraces {
-			if len(tr.ErrorTraces[i].TraceAddress) == 0 {
-				tr.ErrorTraces[i].Error = msg.blockGasError
+		for i := range tr.Traces {
+			if len(tr.Traces[i].TraceAddress) == 0 {
+				tr.Traces[i].Error = msg.blockGasError
 			}
 		}
+		tr.ErrorTraces = append(tr.Traces, tr.ErrorTraces...)
+		tr.ErrorEvents = append(tr.Events, tr.ErrorEvents...)
+		tr.Traces, tr.Events, tr.StorageContracts = nil, nil, nil
 	}
 	return tr, checkReceipt(&tr, msg.Hash.Hex(), receipt)
 }
