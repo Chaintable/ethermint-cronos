@@ -8,7 +8,6 @@ import (
 	"math/big"
 	"sort"
 	"strings"
-	"time"
 
 	ctypes "github.com/cometbft/cometbft/rpc/core/types"
 	"github.com/evmos/ethermint/debank/replay"
@@ -144,7 +143,7 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		return nil, err
 	}
 	// Only the next header attests the application root of this block.
-	next, err := api.waitNextBlock(ctx, blockHeight)
+	next, err := api.nextBlock(blockHeight)
 	if err != nil {
 		return nil, err
 	}
@@ -218,39 +217,23 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	}, nil
 }
 
-var (
-	nextBlockTimeout = time.Minute
-	nextBlockPoll    = 500 * time.Millisecond
-)
-
-// waitNextBlock waits for height+1 so that requests at the chain head do not
-// fail before the next block is committed.
-func (api *API) waitNextBlock(ctx context.Context, height rpctypes.BlockNumber) (*ctypes.ResultBlock, error) {
-	ctx, cancel := context.WithTimeout(ctx, nextBlockTimeout)
-	defer cancel()
-	ticker := time.NewTicker(nextBlockPoll)
-	defer ticker.Stop()
-	for {
-		head, err := api.backend.BlockNumber()
-		if err != nil {
-			return nil, err
-		}
-		if uint64(head) > uint64(height) {
-			next, err := api.backend.TendermintBlockByNumber(height + 1)
-			if err != nil {
-				return nil, err
-			}
-			if next == nil || next.Block == nil {
-				return nil, fmt.Errorf("missing next block %d", height+1)
-			}
-			return next, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, fmt.Errorf("wait for next block %d: %w", height+1, ctx.Err())
-		case <-ticker.C:
-		}
+// nextBlock returns height+1, failing while it is not yet committed.
+func (api *API) nextBlock(height rpctypes.BlockNumber) (*ctypes.ResultBlock, error) {
+	head, err := api.backend.BlockNumber()
+	if err != nil {
+		return nil, err
 	}
+	if uint64(head) <= uint64(height) {
+		return nil, fmt.Errorf("next block %d not committed yet", height+1)
+	}
+	next, err := api.backend.TendermintBlockByNumber(height + 1)
+	if err != nil {
+		return nil, err
+	}
+	if next == nil || next.Block == nil {
+		return nil, fmt.Errorf("missing next block %d", height+1)
+	}
+	return next, nil
 }
 
 func assembleBlockFile(block map[string]interface{}, transactions []interface{}, ethMsgs []*evmtypes.MsgEthereumTx, baseFee *big.Int, observed []includedMessage, consensus map[string]*consensusReceipt) (*dtypes.BlockFile, map[common.Address]struct{}, error) {

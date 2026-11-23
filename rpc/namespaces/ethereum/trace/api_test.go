@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"context"
 	"strings"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	ctypes "github.com/cometbft/cometbft/rpc/core/types"
 	tmtypes "github.com/cometbft/cometbft/types"
@@ -55,44 +53,21 @@ func TestHashLookupRejectsChangedBlock(t *testing.T) {
 	require.ErrorContains(t, err, "101485001")
 }
 
-type growingChainBackend struct {
+type headBackend struct {
 	backend.EVMBackend
-	head  atomic.Uint64
-	polls atomic.Int32
-	grow  int32
+	head uint64
 }
 
-func (g *growingChainBackend) BlockNumber() (hexutil.Uint64, error) {
-	if g.grow > 0 && g.polls.Add(1) == g.grow {
-		g.head.Add(1)
-	}
-	return hexutil.Uint64(g.head.Load()), nil
-}
+func (b headBackend) BlockNumber() (hexutil.Uint64, error) { return hexutil.Uint64(b.head), nil }
 
-func (g *growingChainBackend) TendermintBlockByNumber(h rpctypes.BlockNumber) (*ctypes.ResultBlock, error) {
+func (b headBackend) TendermintBlockByNumber(h rpctypes.BlockNumber) (*ctypes.ResultBlock, error) {
 	return &ctypes.ResultBlock{Block: tmtypes.MakeBlock(int64(h), nil, nil, nil)}, nil
 }
 
-func TestWaitNextBlock(t *testing.T) {
-	defer func(timeout, poll time.Duration) { nextBlockTimeout, nextBlockPoll = timeout, poll }(nextBlockTimeout, nextBlockPoll)
-	nextBlockPoll = time.Millisecond
-
-	// The request arrives at the chain head and H+1 appears on the third poll.
-	chain := &growingChainBackend{grow: 3}
-	chain.head.Store(100)
-	next, err := (&API{backend: chain}).waitNextBlock(context.Background(), 100)
+func TestNextBlockRequired(t *testing.T) {
+	_, err := (&API{backend: headBackend{head: 100}}).nextBlock(100)
+	require.ErrorContains(t, err, "next block 101 not committed yet")
+	next, err := (&API{backend: headBackend{head: 101}}).nextBlock(100)
 	require.NoError(t, err)
 	require.Equal(t, int64(101), next.Block.Height)
-
-	nextBlockTimeout = 20 * time.Millisecond
-	stalled := &growingChainBackend{}
-	stalled.head.Store(100)
-	_, err = (&API{backend: stalled}).waitNextBlock(context.Background(), 100)
-	require.ErrorIs(t, err, context.DeadlineExceeded)
-
-	nextBlockTimeout = time.Minute
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = (&API{backend: stalled}).waitNextBlock(ctx, 100)
-	require.ErrorIs(t, err, context.Canceled)
 }
