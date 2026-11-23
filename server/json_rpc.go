@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -29,8 +30,11 @@ import (
 	rpcclient "github.com/cometbft/cometbft/rpc/client"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/server"
+	"github.com/cosmos/cosmos-sdk/server/types"
 	ethrpc "github.com/ethereum/go-ethereum/rpc"
 	"github.com/evmos/ethermint/appmempool"
+	"github.com/evmos/ethermint/debank/replay"
+	"github.com/evmos/ethermint/debank/statediff"
 	"github.com/evmos/ethermint/evmd/ante"
 	"github.com/evmos/ethermint/rpc"
 	"github.com/evmos/ethermint/rpc/stream"
@@ -60,6 +64,7 @@ func StartJSONRPC(
 	config *config.Config,
 	indexer ethermint.EVMTxIndexer,
 	app AppServices,
+	abciMtx sync.Locker,
 ) (*http.Server, error) {
 	logger := srvCtx.Logger.With("module", "geth")
 	// Set Geth's global logger to use this handler
@@ -81,8 +86,21 @@ func StartJSONRPC(
 
 	allowUnprotectedTxs := config.JSONRPC.AllowUnprotectedTxs
 	rpcAPIArr := config.JSONRPC.API
+	var stateSource statediff.StateChangeSource
+	if namespaceEnabled(rpcAPIArr, rpc.TraceNamespace) {
+		stateApp, ok := app.(types.Application)
+		if !ok {
+			return nil, fmt.Errorf("trace namespace requires a store application, got %T", app)
+		}
+		resolved, err := resolveStateChangeSource(stateApp, clientCtx.Codec, abciMtx)
+		if err != nil {
+			return nil, err
+		}
+		stateSource = resolved
+	}
 
-	apis := rpc.GetRPCAPIsWithMempool(srvCtx, clientCtx, rpcStream, allowUnprotectedTxs, indexer, rpcAPIArr, app.MempoolClient())
+	executor, _ := app.(replay.Executor)
+	apis := rpc.GetRPCAPIsWithMempool(srvCtx, clientCtx, rpcStream, allowUnprotectedTxs, indexer, rpcAPIArr, app.MempoolClient(), stateSource, executor)
 
 	for _, api := range apis {
 		if err := rpcServer.RegisterName(api.Namespace, api.Service); err != nil {

@@ -74,7 +74,8 @@ type Keeper struct {
 	eip155ChainID *big.Int
 
 	// Tracer used to collect execution traces from the EVM transaction execution
-	tracer string
+	tracer              string
+	transactionObserver TransactionObserver
 
 	// EVM Hooks for tx post-processing
 	hooks types.EvmHooks
@@ -481,4 +482,14 @@ func (k *Keeper) GetCodeHash(acct sdk.AccountI) common.Hash {
 		return hash
 	}
 	return common.BytesToHash(types.EmptyCodeHash)
+}
+
+// TransactionObserver records one signed message and receives its final result
+// after post-processing and gas refunds.
+type TransactionObserver func(sdk.Context, common.Hash) (*tracing.Hooks, func(*types.EVMResult, error))
+
+// SetTransactionObserver attaches hooks to signed EVM messages in a private,
+// sequential replay keeper. Internal module calls use ApplyMessage directly.
+func (k *Keeper) SetTransactionObserver(observer TransactionObserver) {
+	k.transactionObserver = observer
 }

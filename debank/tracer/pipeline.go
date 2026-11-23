@@ -1,0 +1,113 @@
+package tracer
+
+import (
+	"math/big"
+	"strings"
+	"time"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	dtypes "github.com/evmos/ethermint/debank/types"
+	evmtypes "github.com/evmos/ethermint/x/evm/types"
+)
+
+func BuildPipelineBlock(rawBlock map[string]interface{}) dtypes.Block {
+	block := dtypes.Block{
+		ID:                    rawBlock["hash"].(common.Hash).Hex(),
+		Height:                new(big.Int).Set((*big.Int)(rawBlock["number"].(*hexutil.Big))),
+		ParentID:              rawBlock["parentHash"].(common.Hash).Hex(),
+		BaseFeePerGas:         big.NewInt(0),
+		Miner:                 strings.ToLower(rawBlock["miner"].(common.Address).Hex()),
+		GasLimit:              new(big.Int).SetUint64(uint64(rawBlock["gasLimit"].(hexutil.Uint64))),
+		GasUsed:               new(big.Int).SetUint64(uint64(rawBlock["gasUsed"].(hexutil.Uint64))),
+		Timestamp:             uint64(rawBlock["timestamp"].(hexutil.Uint64)),
+		ProcessStartTimestamp: time.Now().UnixMilli(),
+	}
+	if baseFeePerGas, ok := rawBlock["baseFeePerGas"]; ok {
+		block.BaseFeePerGas = (*big.Int)(baseFeePerGas.(*hexutil.Big))
+	}
+	return block
+}
+
+func BuildPipelineTransaction(
+	tx *ethtypes.Transaction,
+	index int64,
+	from common.Address,
+	gasUsed *big.Int,
+	baseFee *big.Int,
+	success bool,
+) dtypes.Transaction {
+	// A contract creation reports the created address, as the receipt does.
+	to := crypto.CreateAddress(from, tx.Nonce())
+	if tx.To() != nil {
+		to = *tx.To()
+	}
+	transaction := dtypes.Transaction{
+		ID:               tx.Hash().Hex(),
+		From:             strings.ToLower(from.Hex()),
+		To:               strings.ToLower(to.Hex()),
+		Gas:              new(big.Int).SetUint64(tx.Gas()),
+		GasUsed:          gasUsed,
+		GasPrice:         tx.GasPrice(),
+		Status:           success,
+		GasFeeCap:        common.Big0,
+		GasTipCap:        common.Big0,
+		Input:            tx.Data(),
+		Nonce:            new(big.Int).SetUint64(tx.Nonce()),
+		TransactionIndex: index,
+		Value:            (*hexutil.Big)(tx.Value()),
+	}
+	switch tx.Type() {
+	case ethtypes.DynamicFeeTxType, ethtypes.BlobTxType, ethtypes.SetCodeTxType:
+		transaction.GasFeeCap = tx.GasFeeCap()
+		transaction.GasTipCap = tx.GasTipCap()
+		// if the transaction has been mined, compute the effective gas price
+		if baseFee != nil {
+			price := evmtypes.EffectiveGasPrice(baseFee, tx.GasFeeCap(), tx.GasTipCap())
+			transaction.GasPrice = price
+		}
+	}
+	return transaction
+}
+
+func BuildPilelineBlockHeader(header map[string]interface{}) *dtypes.Header {
+	blockHeader := dtypes.Header{
+		Number:           header["number"].(*hexutil.Big),
+		Hash:             header["hash"].(common.Hash),
+		ParentHash:       header["parentHash"].(common.Hash),
+		Nonce:            header["nonce"].(ethtypes.BlockNonce),
+		MixHash:          header["mixHash"].(common.Hash),
+		Sha3Uncles:       header["sha3Uncles"].(common.Hash),
+		LogsBloom:        header["logsBloom"].(ethtypes.Bloom),
+		StateRoot:        header["stateRoot"].(common.Hash),
+		Miner:            header["miner"].(common.Address),
+		Difficulty:       header["difficulty"].(*hexutil.Big),
+		ExtraData:        hexutil.Bytes{},
+		GasLimit:         header["gasLimit"].(hexutil.Uint64),
+		GasUsed:          header["gasUsed"].(hexutil.Uint64),
+		Timestamp:        header["timestamp"].(hexutil.Uint64),
+		TransactionsRoot: header["transactionsRoot"].(common.Hash),
+		ReceiptsRoot:     header["receiptsRoot"].(common.Hash),
+	}
+	if baseFeePerGas, ok := header["baseFeePerGas"]; ok {
+		blockHeader.BaseFeePerGas = baseFeePerGas.(*hexutil.Big)
+	}
+	return &blockHeader
+}
+
+func BuildBlockStateDiff(
+	parentRoot common.Hash,
+	root common.Hash,
+	canonical dtypes.TransactionStateDiff,
+) dtypes.BlockStorageDiff {
+	return dtypes.BlockStorageDiff{
+		Hash:            root,
+		ParentHash:      parentRoot,
+		NewAccounts:     canonical.NewAccounts,
+		DeletedAccounts: canonical.DeletedAccounts,
+		StorageDiff:     canonical.StorageDiff,
+		NewCodes:        canonical.NewCodes,
+	}
+}

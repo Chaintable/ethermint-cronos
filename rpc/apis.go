@@ -24,12 +24,15 @@ import (
 	"github.com/ethereum/go-ethereum/rpc"
 
 	"github.com/evmos/ethermint/appmempool"
+	"github.com/evmos/ethermint/debank/replay"
+	"github.com/evmos/ethermint/debank/statediff"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/debug"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/eth"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/eth/filters"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/net"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/personal"
+	"github.com/evmos/ethermint/rpc/namespaces/ethereum/trace"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/txpool"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/web3"
 	"github.com/evmos/ethermint/rpc/stream"
@@ -50,6 +53,7 @@ const (
 	NetNamespace      = "net"
 	TxPoolNamespace   = "txpool"
 	DebugNamespace    = "debug"
+	TraceNamespace    = "trace"
 
 	apiVersion = "1.0"
 )
@@ -187,10 +191,22 @@ func GetRPCAPIsWithMempool(ctx *server.Context,
 	indexer ethermint.EVMTxIndexer,
 	selectedAPIs []string,
 	client appmempool.MempoolClient,
+	stateSource statediff.StateChangeSource,
+	executor replay.Executor,
 ) []rpc.API {
 	var apis []rpc.API
 
 	for _, ns := range selectedAPIs {
+		if ns == TraceNamespace {
+			evmBackend := backend.NewBackend(ctx, ctx.Logger, clientCtx, allowUnprotectedTxs, indexer)
+			apis = append(apis, rpc.API{
+				Namespace: TraceNamespace,
+				Version:   apiVersion,
+				Service:   trace.NewAPI(ctx, ctx.Logger, evmBackend, clientCtx, stateSource, executor),
+				Public:    true,
+			})
+			continue
+		}
 		if creator, ok := apiCreators[ns]; ok {
 			apis = append(apis, creator(ctx, clientCtx, stream, allowUnprotectedTxs, indexer, client)...)
 		} else {
@@ -203,6 +219,9 @@ func GetRPCAPIsWithMempool(ctx *server.Context,
 
 // RegisterAPINamespace registers a new API namespace; fails if already registered.
 func RegisterAPINamespace(ns string, creator APICreator) error {
+	if ns == TraceNamespace {
+		return fmt.Errorf("duplicated api namespace %s", ns)
+	}
 	if _, ok := apiCreators[ns]; ok {
 		return fmt.Errorf("duplicated api namespace %s", ns)
 	}

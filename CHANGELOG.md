@@ -45,6 +45,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ### Improvements
 
+* (debank) Add `trace_debankBlock`: replay the full Cosmos block in an isolated application, verify the result against the committed block results and the next header, and build the DeBank block file. State diffs are read from the committed acc/bank/evm IAVL change sets under the consensus lock.
 * (rpc) [#1010](https://github.com/crypto-org-chain/ethermint/pull/1010) test(rpc): validate JSON-RPC schema against ethereum/execution-apis fixtures.
 * (rpc) [#992](https://github.com/crypto-org-chain/ethermint/pull/992) test(rpc): improve test coverage for GetTransactionByBlock* methods.
 * (rpc) [#996](https://github.com/crypto-org-chain/ethermint/pull/996) refactor(rpc): fix type consistency in `buildReceiptDirect` and `GetTransactionByBlockHashAndIndex`.
