@@ -1,11 +1,16 @@
 package tracer
 
 import (
+	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
+	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/holiman/uint256"
+	"github.com/stretchr/testify/require"
 )
 
 func hash(b byte) common.Hash { return common.BytesToHash([]byte{b}) }
@@ -34,4 +39,33 @@ func TestBuildBlockStateDiff(t *testing.T) {
 		len(out.NewCodes) != 1 || out.NewCodes[0].CodeHash != hash(0xC1) {
 		t.Fatalf("canonical state was not preserved: %#v", out)
 	}
+}
+
+// Fee fields and the creation address follow the eth RPC and the pipeline.
+func TestBuildPipelineTransaction(t *testing.T) {
+	from := common.HexToAddress("0x1")
+	to := common.HexToAddress("0x2")
+	baseFee := big.NewInt(100)
+	feeCap, tipCap := big.NewInt(500), big.NewInt(30)
+	cases := []struct {
+		name               string
+		tx                 *ethtypes.Transaction
+		price, cap, tipcap int64
+	}{
+		{"legacy", ethtypes.NewTx(&ethtypes.LegacyTx{To: &to, GasPrice: big.NewInt(200)}), 200, 0, 0},
+		{"access list", ethtypes.NewTx(&ethtypes.AccessListTx{To: &to, GasPrice: big.NewInt(200)}), 200, 0, 0},
+		{"dynamic fee", ethtypes.NewTx(&ethtypes.DynamicFeeTx{To: &to, GasFeeCap: feeCap, GasTipCap: tipCap}), 130, 500, 30},
+		{"set code", ethtypes.NewTx(&ethtypes.SetCodeTx{To: to, GasFeeCap: uint256.MustFromBig(feeCap), GasTipCap: uint256.MustFromBig(tipCap)}), 130, 500, 30},
+	}
+	for _, c := range cases {
+		got := BuildPipelineTransaction(c.tx, 0, from, big.NewInt(21000), baseFee, true)
+		require.Equal(t, c.price, got.GasPrice.Int64(), c.name)
+		require.Equal(t, c.cap, got.GasFeeCap.Int64(), c.name)
+		require.Equal(t, c.tipcap, got.GasTipCap.Int64(), c.name)
+		require.Equal(t, strings.ToLower(to.Hex()), got.To, c.name)
+	}
+
+	create := ethtypes.NewTx(&ethtypes.LegacyTx{Nonce: 7, GasPrice: big.NewInt(200)})
+	got := BuildPipelineTransaction(create, 0, from, big.NewInt(53000), baseFee, false)
+	require.Equal(t, strings.ToLower(crypto.CreateAddress(from, 7).Hex()), got.To)
 }

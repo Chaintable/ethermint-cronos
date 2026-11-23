@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	dtypes "github.com/evmos/ethermint/debank/types"
 	evmtypes "github.com/evmos/ethermint/x/evm/types"
 )
@@ -38,7 +39,8 @@ func BuildPipelineTransaction(
 	baseFee *big.Int,
 	success bool,
 ) dtypes.Transaction {
-	to := common.Address{}
+	// A contract creation reports the created address, as the receipt does.
+	to := crypto.CreateAddress(from, tx.Nonce())
 	if tx.To() != nil {
 		to = *tx.To()
 	}
@@ -57,7 +59,8 @@ func BuildPipelineTransaction(
 		TransactionIndex: index,
 		Value:            (*hexutil.Big)(tx.Value()),
 	}
-	if tx.Type() == ethtypes.DynamicFeeTxType {
+	switch tx.Type() {
+	case ethtypes.DynamicFeeTxType, ethtypes.BlobTxType, ethtypes.SetCodeTxType:
 		transaction.GasFeeCap = tx.GasFeeCap()
 		transaction.GasTipCap = tx.GasTipCap()
 		// if the transaction has been mined, compute the effective gas price
