@@ -11,6 +11,7 @@ import (
 	"time"
 
 	ctypes "github.com/cometbft/cometbft/rpc/core/types"
+	tmtypes "github.com/cometbft/cometbft/types"
 	"github.com/evmos/ethermint/debank/replay"
 
 	"cosmossdk.io/log/v2"
@@ -40,6 +41,7 @@ type API struct {
 	queryClient *rpctypes.QueryClient
 	stateSource statediff.StateChangeSource
 	executor    replay.Executor
+	validators  validatorCache
 }
 
 // NewAPI creates the trace namespace API.
@@ -153,7 +155,20 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		return nil, err
 	}
 	timing.mark("evm_msgs")
-	req, parentRoot, err := api.replayRequest(ctx, resBlock.Block)
+	if err = resBlock.Block.ValidateBasic(); err != nil {
+		return nil, err
+	}
+	// Only a replay needs the parent validators; only a state diff needs the parent root.
+	var req replay.Request
+	var parentRoot []byte
+	if len(ethMsgs) > 0 {
+		req, parentRoot, err = api.replayRequest(ctx, resBlock.Block)
+	} else if !blockFileOnly {
+		var parent *tmtypes.Header
+		if parent, err = api.parentHeader(ctx, resBlock.Block); err == nil {
+			parentRoot = parent.AppHash
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
