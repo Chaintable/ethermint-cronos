@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	abci "github.com/cometbft/cometbft/abci/types"
 	ctypes "github.com/cometbft/cometbft/rpc/core/types"
 	tmtypes "github.com/cometbft/cometbft/types"
 	"github.com/evmos/ethermint/rpc/backend"
@@ -15,6 +16,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/rlp"
+	"github.com/evmos/ethermint/debank/replay"
 	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/stretchr/testify/require"
 )
@@ -92,4 +94,37 @@ func TestEncodeOutput(t *testing.T) {
 	want, err := json.Marshal(&dtypes.DebankOutPutJs{BlockFile: file, Header: full.Header, StateDiff: data, ValidationHash: 7})
 	require.NoError(t, err)
 	require.Equal(t, string(want), string(got))
+}
+
+type countingExecutor struct {
+	calls  int
+	result *replay.Result
+}
+
+func (e *countingExecutor) CheckReplayHeight(string, int64) error { return nil }
+func (e *countingExecutor) BlockFileOnly() (bool, error)          { return false, nil }
+func (e *countingExecutor) ReplayBlock(context.Context, replay.Request) (*replay.Result, error) {
+	e.calls++
+	return e.result, nil
+}
+
+func TestReplayOnlyBlocksWithEVMMessages(t *testing.T) {
+	appHash := bytes.Repeat([]byte{1}, 32)
+	results := &ctypes.ResultBlockResults{AppHash: appHash}
+	exec := &countingExecutor{result: &replay.Result{Finalize: &abci.ResponseFinalizeBlock{AppHash: appHash}}}
+	api := &API{executor: exec}
+
+	got, err := api.replayIfNeeded(context.Background(), replay.Request{}, results, 0)
+	require.NoError(t, err)
+	require.Nil(t, got)
+	require.Zero(t, exec.calls)
+
+	got, err = api.replayIfNeeded(context.Background(), replay.Request{}, results, 1)
+	require.NoError(t, err)
+	require.Equal(t, exec.result, got)
+	require.Equal(t, 1, exec.calls)
+
+	exec.result.Finalize.AppHash = bytes.Repeat([]byte{2}, 32)
+	_, err = api.replayIfNeeded(context.Background(), replay.Request{}, results, 1)
+	require.ErrorContains(t, err, "AppHash")
 }

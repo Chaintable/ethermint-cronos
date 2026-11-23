@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"sort"
 	"strings"
+	"time"
 
 	ctypes "github.com/cometbft/cometbft/rpc/core/types"
 	"github.com/evmos/ethermint/debank/replay"
@@ -131,6 +132,12 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	if err != nil {
 		return nil, err
 	}
+	timing := newPhaseTimer()
+	defer func() {
+		if err == nil {
+			api.logger.Debug("trace_debankBlock timing", timing.fields("height", int64(blockHeight))...)
+		}
+	}()
 
 	blockRes, err := api.backend.TendermintBlockResultByNumber(&resBlock.Block.Height)
 	if err != nil {
@@ -140,28 +147,34 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	if blockRes == nil || blockRes.Height != int64(blockHeight) || len(blockRes.TxsResults) != len(resBlock.Block.Txs) {
 		return nil, fmt.Errorf("incomplete ABCI results")
 	}
+	timing.mark("results")
+	ethMsgs, err := api.backend.EthMsgsFromTendermintBlock(resBlock, blockRes)
+	if err != nil {
+		return nil, err
+	}
+	timing.mark("evm_msgs")
 	req, parentRoot, err := api.replayRequest(ctx, resBlock.Block)
 	if err != nil {
 		return nil, err
 	}
-	result, err := api.executor.ReplayBlock(ctx, req)
+	timing.mark("request")
+	result, err := api.replayIfNeeded(ctx, req, blockRes, len(ethMsgs))
 	if err != nil {
 		return nil, err
 	}
-	if result == nil {
-		return nil, fmt.Errorf("missing replay result")
-	}
-	if err = replay.Verify(blockRes, result.Finalize); err != nil {
-		return nil, err
-	}
+	timing.mark("replay")
 	// Only the next header attests the application root of this block.
 	next, err := api.nextBlock(blockHeight)
 	if err != nil {
 		return nil, err
 	}
-	if !bytes.Equal(next.Block.LastBlockID.Hash, hash) || !bytes.Equal(next.Block.AppHash, result.Finalize.AppHash) {
-		return nil, fmt.Errorf("next header AppHash or parent hash mismatch")
+	if !bytes.Equal(next.Block.LastBlockID.Hash, hash) {
+		return nil, fmt.Errorf("next header parent hash mismatch")
 	}
+	if result != nil && !bytes.Equal(next.Block.AppHash, result.Finalize.AppHash) {
+		return nil, fmt.Errorf("next header AppHash mismatch")
+	}
+	timing.mark("next_header")
 	block, err := api.backend.RPCBlockFromTendermintBlock(resBlock, blockRes, true)
 	if err != nil {
 		api.logger.Debug("RPCBlockFromTendermintBlock failed", "height", blockHeight, "error", err.Error())
@@ -171,10 +184,7 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	if !ok {
 		return nil, fmt.Errorf("malformed RPC block transactions")
 	}
-	ethMsgs, err := api.backend.EthMsgsFromTendermintBlock(resBlock, blockRes)
-	if err != nil {
-		return nil, err
-	}
+	timing.mark("rpc_block")
 	stateHeader := dtracer.BuildPilelineBlockHeader(block)
 	var baseFee *big.Int
 	if stateHeader.BaseFeePerGas != nil {
@@ -185,14 +195,18 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	if err != nil {
 		return nil, err
 	}
-	observed, err := api.canonicalObservations(resBlock, blockRes, result, consensus)
-	if err != nil {
-		return nil, err
+	timing.mark("receipts")
+	var observed []replay.Transaction
+	if result != nil {
+		if observed, err = api.canonicalObservations(resBlock, blockRes, result, consensus); err != nil {
+			return nil, err
+		}
 	}
 	blockFile, fromToAddress, err := assembleBlockFile(block, transactions, ethMsgs, baseFee, observed, consensus)
 	if err != nil {
 		return nil, err
 	}
+	timing.mark("assemble")
 
 	evmDenom, err := api.evmDenom(blockHeight)
 	if err != nil {
@@ -203,6 +217,7 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		fromToAddress[addr] = struct{}{}
 	}
 	blockFile.StorageContracts = mergeStorageContracts(fromToAddress, blockFile.StorageContracts)
+	timing.mark("storage_contracts")
 	if blockFileOnly {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -224,6 +239,7 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		return nil, fmt.Errorf("load canonical state diff for block %d: %w", blockHeight, err)
 	}
 	stateDiff := dtracer.BuildBlockStateDiff(common.BytesToHash(parentRoot), stateHeader.StateRoot, canonical)
+	timing.mark("state_diff")
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -233,6 +249,47 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		StateDiff:      &stateDiff,
 		ValidationHash: blockFile.Validation().ValidationHash,
 	}, nil
+}
+
+// phaseTimer records the elapsed milliseconds of consecutive request phases.
+type phaseTimer struct {
+	start, last time.Time
+	phases      []any
+}
+
+func newPhaseTimer() *phaseTimer {
+	now := time.Now()
+	return &phaseTimer{start: now, last: now}
+}
+
+func (p *phaseTimer) mark(name string) {
+	now := time.Now()
+	p.phases = append(p.phases, name+"_ms", now.Sub(p.last).Milliseconds())
+	p.last = now
+}
+
+func (p *phaseTimer) fields(prefix ...any) []any {
+	return append(append(prefix, p.phases...), "total_ms", time.Since(p.start).Milliseconds())
+}
+
+// replayIfNeeded executes the block unless it has no committed EVM messages:
+// such a block yields no traces, and its block file and state diff come from
+// the block, its results and the committed state.
+func (api *API) replayIfNeeded(ctx context.Context, req replay.Request, results *ctypes.ResultBlockResults, ethMsgs int) (*replay.Result, error) {
+	if ethMsgs == 0 {
+		return nil, nil
+	}
+	result, err := api.executor.ReplayBlock(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, fmt.Errorf("missing replay result")
+	}
+	if err = replay.Verify(results, result.Finalize); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // nextBlock returns height+1, failing while it is not yet committed.
