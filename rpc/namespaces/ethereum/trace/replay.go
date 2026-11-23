@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	ctypes "github.com/cometbft/cometbft/rpc/core/types"
-	rpctypes "github.com/evmos/ethermint/rpc/types"
 	evmtypes "github.com/evmos/ethermint/x/evm/types"
 
 	abci "github.com/cometbft/cometbft/abci/types"
@@ -63,33 +62,23 @@ func (api *API) replayRequest(ctx context.Context, block *tmtypes.Block) (replay
 	return req, header.Header.AppHash, nil
 }
 
-// An included message may have exhausted block gas before entering the EVM.
-type includedMessage struct {
-	replay.Transaction
-	blockGasError string
-}
-
 // canonicalObservations matches each observed message to its original Cosmos
 // position, and checks the charged gas and status against the receipt path.
-func (api *API) canonicalObservations(block *ctypes.ResultBlock, results *ctypes.ResultBlockResults, replayed *replay.Result, receipts map[string]*consensusReceipt) ([]includedMessage, error) {
+// A failed Cosmos transaction discards every message it executed.
+func (api *API) canonicalObservations(block *ctypes.ResultBlock, results *ctypes.ResultBlockResults, replayed *replay.Result, receipts map[string]*consensusReceipt) ([]replay.Transaction, error) {
 	var selected []replay.Transaction
 	for _, obs := range replayed.Transactions {
 		if obs.CosmosIndex < 0 || obs.CosmosIndex >= len(results.TxsResults) {
 			return nil, fmt.Errorf("invalid observed Cosmos index %d", obs.CosmosIndex)
 		}
-		if rpctypes.TxSuccessOrExceedsBlockGasLimit(results.TxsResults[obs.CosmosIndex]) {
+		if results.TxsResults[obs.CosmosIndex].Code == 0 {
 			selected = append(selected, obs)
 		}
 	}
-	var included []includedMessage
+	var included []replay.Transaction
 	i := 0
 	for txIndex, raw := range block.Block.Txs {
-		result := replayed.Finalize.TxResults[txIndex]
-		archived := results.TxsResults[txIndex]
-		if rpctypes.TxSuccessOrExceedsBlockGasLimit(archived) != rpctypes.TxSuccessOrExceedsBlockGasLimit(result) {
-			return nil, fmt.Errorf("tx[%d]: replay and archive disagree on EVM inclusion", txIndex)
-		}
-		if !rpctypes.TxSuccessOrExceedsBlockGasLimit(result) {
+		if results.TxsResults[txIndex].Code != 0 {
 			continue
 		}
 		tx, err := api.clientCtx.TxConfig.TxDecoder()(raw)
@@ -101,27 +90,20 @@ func (api *API) canonicalObservations(block *ctypes.ResultBlock, results *ctypes
 			if !ok {
 				continue
 			}
+			if i >= len(selected) || selected[i].CosmosIndex != txIndex || selected[i].MessageIndex != msgIndex {
+				return nil, fmt.Errorf("tx[%d]/msg[%d]: missing observation", txIndex, msgIndex)
+			}
+			obs := selected[i]
+			i++
 			hash := eth.AsTransaction().Hash()
-			key := strings.ToLower(hash.Hex())
-			entry := includedMessage{Transaction: replay.Transaction{CosmosIndex: txIndex, MessageIndex: msgIndex, Hash: hash}}
-			matched := i < len(selected) && selected[i].CosmosIndex == txIndex && selected[i].MessageIndex == msgIndex
-			if matched {
-				entry.Transaction = selected[i]
-				i++
-				if entry.Hash != hash || entry.Error != "" || len(entry.Trace) == 0 {
-					return nil, fmt.Errorf("tx[%d]/msg[%d]: invalid observation for %s: %s", txIndex, msgIndex, hash, entry.Error)
-				}
+			if obs.Hash != hash || obs.Error != "" || len(obs.Trace) == 0 {
+				return nil, fmt.Errorf("tx[%d]/msg[%d]: invalid observation for %s: %s", txIndex, msgIndex, hash, obs.Error)
 			}
-			rc := receipts[key]
-			if result.Code != 0 {
-				entry.blockGasError = archived.Log
-				if rc == nil || rc.Status || rc.GasUsed != eth.GetGas() || len(rc.Logs) != 0 {
-					return nil, fmt.Errorf("tx[%d]/msg[%d]: invalid block gas failure receipt", txIndex, msgIndex)
-				}
-			} else if !matched || rc == nil || entry.GasUsed != rc.GasUsed || entry.Failed == rc.Status {
-				return nil, fmt.Errorf("tx[%d]/msg[%d]: missing observation or receipt mismatch", txIndex, msgIndex)
+			rc := receipts[strings.ToLower(hash.Hex())]
+			if rc == nil || obs.GasUsed != rc.GasUsed || obs.Failed == rc.Status {
+				return nil, fmt.Errorf("tx[%d]/msg[%d]: receipt mismatch for %s", txIndex, msgIndex, hash)
 			}
-			included = append(included, entry)
+			included = append(included, obs)
 		}
 	}
 	if i != len(selected) {

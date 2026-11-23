@@ -37,6 +37,7 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ## Unreleased
 
+* (debank) Add `trace_debankBlock`: replay the full Cosmos block in an isolated application, verify the result against the committed block results and the next header, and build the DeBank block file. State diffs are read from the committed acc/bank/evm IAVL change sets under the consensus lock.
 * (debank) [Chaintable#15](https://github.com/Chaintable/ethermint-cronos/pull/15) serialize live IAVL state-diff reads with block execution.
 * (evm) [#997](https://github.com/crypto-org-chain/ethermint/pull/997) fix(evm): add optional `traceReplay` trace-config flag to skip gas deduction during tracing and bypass a legacy bug.
 * (server) [#938](https://github.com/crypto-org-chain/ethermint/pull/938) feat(server): add `index-eth-tx range <start> <end>` subcommand for targeted block re-indexing.
