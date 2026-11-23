@@ -13,18 +13,11 @@ import (
 	"github.com/ethereum/go-ethereum/core/tracing"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/core/vm"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/eth/tracers"
-	"github.com/ethereum/go-ethereum/params"
 	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/evmos/ethermint/debank/util"
-	"github.com/holiman/uint256"
 )
 
-const Name = "debankTracer"
-
-// callFrame mirrors the cosmos-evm (TAC) debank tracer call frame verbatim;
-// these fields are part of the DeBank wire contract.
+// callFrame is one EVM call frame of the DeBank trace.
 type callFrame struct {
 	Type         vm.OpCode       `json:"-"`
 	From         common.Address  `json:"from"`
@@ -81,126 +74,72 @@ func (f *callFrame) processOutput(output []byte, err error, reverted bool) {
 	}
 }
 
-// debankTracer collects the DeBank per-tx trace result over the modern
-// core/tracing.Hooks. The lifecycle is driven by go-ethereum hooks instead of
-// the legacy vm.EVMLogger Capture* methods, but the DeBank id/error/pos
-// semantics mirror cosmos-evm's tracer verbatim.
+// debankTracer collects the DeBank call tree, logs and storage-changing
+// contracts of one signed EVM message from core/tracing hooks. Native CRO
+// balances and the block state diff come from the committed IAVL stores.
 //
-// native CRO balance is intentionally NOT collected here (OnBalanceChange is
-// not registered): Cronos is bank-backed, so balances are filled at block level
-// from bank events + GetBalance(addr,N) in the pipeline / bankdiff channel.
-//
-// IMPORTANT (committed-only state diff): the On*Change hooks fire at execution
-// time (SetState/SetCode/SetNonce) and RevertToSnapshot does NOT emit a
-// compensating hook, so a write made in a reverted call/tx would otherwise leak.
-// cosmos-evm avoided this because its hooks fired at Commit (committed state). To
-// reproduce that here, the hooks only DISCOVER which (addr,slot)/accounts were
-// touched; the actual values are re-read from the post-execution StateDB at
-// OnTxEnd (see commitStateDiff), so reverted writes are dropped.
+// OnStorageChange fires at execution time and a revert does not undo it, so the
+// hook only records touched slots; committed values are re-read from the StateDB
+// once the message finishes.
 type debankTracer struct {
+	hash      common.Hash
 	callstack []callFrame
-	frameGas  bool
 	entered   int
-	gasLimit  uint64
-	ctx       *tracers.Context
-	stateDB   tracing.StateDB // captured at OnTxStart; read for committed state at OnTxEnd
+	stateDB   tracing.StateDB
 
 	traces      []dtypes.Trace
 	logs        []dtypes.Event
 	errorTraces []dtypes.Trace
 	errorLogs   []dtypes.Event
 
-	// discovery sets (raw addr/slot); committed values re-read at OnTxEnd.
-	touchedStorage  map[common.Address]map[common.Hash]common.Hash // addr -> slot -> pre-tx value (first prev)
-	touchedAccounts map[common.Address]struct{}                    // accounts with a nonce/code change
+	touchedStorage map[common.Address]map[common.Hash]common.Hash // addr -> slot -> pre-tx value
+	storageChanges map[common.Address]struct{}                    // contracts with a committed storage change
 
-	// committed state diff, built by commitStateDiff at OnTxEnd.
-	storageChanges  map[common.Address]struct{} // contracts with a committed storage change
-	DeletedAccounts map[common.Hash]struct{}
-	NewAccounts     map[common.Hash]*dtypes.NewAccount
-	StorageDiff     map[common.Hash]map[common.Hash][]byte
-	NewCodes        map[common.Hash][]byte
-
-	committed bool // commitStateDiff ran (OnTxEnd)
-	done      bool // finalize ran (GetResult)
+	committed bool
+	done      bool
 }
 
-// newDebankTracer is the tracers.DefaultDirectory ctor for "debankTracer".
-func newDebankTracer(ctx *tracers.Context, _ json.RawMessage, _ *params.ChainConfig) (*tracers.Tracer, error) {
-	t, _ := newTracer(ctx, false)
-	return t, nil
-}
-
-// NewExecutionTracer preserves frame gas from the EVM enter/exit hooks.
-func NewExecutionTracer(hash common.Hash) *tracers.Tracer {
-	t, _ := newTracer(&tracers.Context{TxHash: hash}, true)
-	return t
-}
-
-// NewReplayTracer finalizes signed messages after Cosmos post-processing.
+// NewReplayTracer traces one signed message. The returned function finalizes
+// the result after Cosmos post-processing; a non-empty vmError marks a root
+// that the EVM completed but post-processing reverted.
 func NewReplayTracer(hash common.Hash) (*tracing.Hooks, func(string) (json.RawMessage, error)) {
-	tr, t := newTracer(&tracers.Context{TxHash: hash}, true)
-	return tr.Hooks, func(vmError string) (json.RawMessage, error) {
+	t := &debankTracer{
+		hash:           hash,
+		traces:         make([]dtypes.Trace, 0),
+		logs:           make([]dtypes.Event, 0),
+		errorTraces:    make([]dtypes.Trace, 0),
+		errorLogs:      make([]dtypes.Event, 0),
+		touchedStorage: make(map[common.Address]map[common.Hash]common.Hash),
+		storageChanges: make(map[common.Address]struct{}),
+	}
+	hooks := &tracing.Hooks{
+		OnTxStart:       t.OnTxStart,
+		OnTxEnd:         t.OnTxEnd,
+		OnEnter:         t.OnEnter,
+		OnExit:          t.OnExit,
+		OnLog:           t.OnLog,
+		OnStorageChange: t.OnStorageChange,
+	}
+	return hooks, func(vmError string) (json.RawMessage, error) {
 		if vmError != "" && len(t.callstack) == 1 && t.callstack[0].Error == "" {
-			// The EVM returned successfully but the enclosing SDK cache was discarded.
 			t.callstack[0].Error = vmError
 			t.committed = true
-			clear(t.DeletedAccounts)
-			clear(t.NewAccounts)
-			clear(t.StorageDiff)
-			clear(t.NewCodes)
 			clear(t.storageChanges)
 		}
-		return t.GetResult()
+		return t.result()
 	}
-}
-
-func newTracer(ctx *tracers.Context, frameGas bool) (*tracers.Tracer, *debankTracer) {
-	t := &debankTracer{
-		frameGas:        frameGas,
-		ctx:             ctx,
-		traces:          make([]dtypes.Trace, 0),
-		logs:            make([]dtypes.Event, 0),
-		errorTraces:     make([]dtypes.Trace, 0),
-		errorLogs:       make([]dtypes.Event, 0),
-		touchedStorage:  make(map[common.Address]map[common.Hash]common.Hash),
-		touchedAccounts: make(map[common.Address]struct{}),
-		storageChanges:  make(map[common.Address]struct{}),
-		DeletedAccounts: make(map[common.Hash]struct{}),
-		NewAccounts:     make(map[common.Hash]*dtypes.NewAccount),
-		StorageDiff:     make(map[common.Hash]map[common.Hash][]byte),
-		NewCodes:        make(map[common.Hash][]byte),
-	}
-	return &tracers.Tracer{
-		Hooks: &tracing.Hooks{
-			OnTxStart: t.OnTxStart,
-			OnTxEnd:   t.OnTxEnd,
-			OnEnter:   t.OnEnter,
-			OnExit:    t.OnExit,
-			OnLog:     t.OnLog,
-			// state diff (contract storage/code/nonce); balance is NOT collected.
-			OnStorageChange: t.OnStorageChange,
-			OnCodeChange:    t.OnCodeChange, // deploy -> NewCodes; selfdestruct clear -> DeletedAccounts
-			OnNonceChangeV2: t.OnNonceChangeV2,
-		},
-		GetResult: t.GetResult,
-		Stop:      t.Stop,
-	}, t
 }
 
 // --- call tree channel (modeled on go-ethereum eth/tracers/native/call.go) ---
 
-func (t *debankTracer) OnTxStart(env *tracing.VMContext, tx *ethtypes.Transaction, _ common.Address) {
-	t.gasLimit = tx.Gas()
+func (t *debankTracer) OnTxStart(env *tracing.VMContext, _ *ethtypes.Transaction, _ common.Address) {
 	if env != nil {
-		t.stateDB = env.StateDB // for committed-state re-read at OnTxEnd
+		t.stateDB = env.StateDB
 	}
 }
 
 func (t *debankTracer) OnEnter(depth int, typ byte, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
-	if t.frameGas {
-		t.entered++
-	}
+	t.entered++
 	toCopy := to
 	call := callFrame{
 		Type:  vm.OpCode(typ),
@@ -209,9 +148,6 @@ func (t *debankTracer) OnEnter(depth int, typ byte, from common.Address, to comm
 		Input: common.CopyBytes(input),
 		Gas:   gas,
 		Value: value,
-	}
-	if depth == 0 && !t.frameGas {
-		call.Gas = t.gasLimit
 	}
 	t.callstack = append(t.callstack, call)
 }
@@ -245,13 +181,8 @@ func (t *debankTracer) captureEnd(output []byte, gasUsed uint64, err error, reve
 	t.callstack[0].processOutput(output, err, reverted)
 }
 
-func (t *debankTracer) OnTxEnd(receipt *ethtypes.Receipt, err error) {
-	if !t.frameGas && err == nil && receipt != nil && len(t.callstack) > 0 {
-		t.callstack[0].GasUsed = receipt.GasUsed
-	}
-	// Build the committed state diff now: execution (incl. reverts) is done and
-	// the StateDB holds the values that will commit for this tx.
-	t.commitStateDiff()
+func (t *debankTracer) OnTxEnd(_ *ethtypes.Receipt, _ error) {
+	t.commitStorageChanges()
 }
 
 func (t *debankTracer) OnLog(log *ethtypes.Log) {
@@ -284,9 +215,6 @@ func (t *debankTracer) OnLog(log *ethtypes.Log) {
 	top.Logs = append(top.Logs, l)
 }
 
-// --- contract state-diff channel: On*Change hooks DISCOVER touched
-// slots/accounts; committed values are re-read in commitStateDiff at OnTxEnd ---
-
 func (t *debankTracer) OnStorageChange(addr common.Address, slot common.Hash, prev common.Hash, _ common.Hash) {
 	slots := t.touchedStorage[addr]
 	if slots == nil {
@@ -294,70 +222,30 @@ func (t *debankTracer) OnStorageChange(addr common.Address, slot common.Hash, pr
 		t.touchedStorage[addr] = slots
 	}
 	if _, seen := slots[slot]; !seen {
-		slots[slot] = prev // pre-tx value, to drop slots with no net committed change
+		slots[slot] = prev
 	}
-	// mark the executing frame (callstack top) as having changed storage
 	if n := len(t.callstack); n > 0 {
 		t.callstack[n-1].SelfStorageChange = true
 		t.callstack[n-1].StorageChange = true
 	}
 }
 
-func (t *debankTracer) OnCodeChange(addr common.Address, _ common.Hash, _ []byte, _ common.Hash, _ []byte) {
-	t.touchedAccounts[addr] = struct{}{}
-}
-
-func (t *debankTracer) OnNonceChangeV2(addr common.Address, _ uint64, _ uint64, _ tracing.NonceChangeReason) {
-	t.touchedAccounts[addr] = struct{}{}
-}
-
-// commitStateDiff builds the committed state diff from the post-execution StateDB
-// (reverts already applied), so reverted writes/creates are excluded. Storage is
-// emitted only when the committed value differs from the pre-tx value; an account
-// that no longer exists becomes a DeletedAccount, otherwise its committed
-// nonce/code (Balance left 0, filled by the bank channel) becomes a NewAccount.
-func (t *debankTracer) commitStateDiff() {
+// commitStorageChanges keeps contracts whose committed storage differs from the
+// pre-message value, dropping writes undone by a revert.
+func (t *debankTracer) commitStorageChanges() {
 	if t.committed || t.stateDB == nil {
 		return
 	}
 	t.committed = true
-
 	for addr, slots := range t.touchedStorage {
-		addrhash := crypto.Keccak256Hash(addr.Bytes())
 		for slot, pre := range slots {
-			committed := t.stateDB.GetState(addr, slot)
-			if committed == pre {
-				continue // reverted or no net change this tx
+			if t.stateDB.GetState(addr, slot) != pre {
+				t.storageChanges[addr] = struct{}{}
+				break
 			}
-			if t.StorageDiff[addrhash] == nil {
-				t.StorageDiff[addrhash] = make(map[common.Hash][]byte)
-			}
-			t.StorageDiff[addrhash][crypto.Keccak256Hash(slot.Bytes())] = committed.Bytes()
-			t.storageChanges[addr] = struct{}{}
-		}
-	}
-
-	for addr := range t.touchedAccounts {
-		addrhash := crypto.Keccak256Hash(addr.Bytes())
-		if !t.stateDB.Exist(addr) {
-			t.DeletedAccounts[addrhash] = struct{}{}
-			continue
-		}
-		code := t.stateDB.GetCode(addr)
-		codeHash := t.stateDB.GetCodeHash(addr)
-		t.NewAccounts[addrhash] = &dtypes.NewAccount{
-			Address:  addrhash,
-			Balance:  uint256.NewInt(0),
-			Nonce:    t.stateDB.GetNonce(addr),
-			CodeHash: codeHash,
-		}
-		if len(code) > 0 {
-			t.NewCodes[codeHash] = code
 		}
 	}
 }
-
-// --- DeBank semantics (verbatim from cosmos-evm tracer; hook-agnostic) ---
 
 func setParentFailed(cf *callFrame, parentFailed bool) {
 	failed := cf.failed() || parentFailed
@@ -429,7 +317,7 @@ func (t *debankTracer) ToTrace(f *callFrame, traceAddress []int64) dtypes.Trace 
 		Output:            f.Output,
 		CallCreateType:    CallCreateType,
 		CallType:          CallType,
-		TxID:              t.ctx.TxHash.Hex(),
+		TxID:              t.hash.Hex(),
 		ParentTraceID:     f.ParentTraceID,
 		PosInParentTrace:  int64(f.PosInParentTrace),
 		SelfStorageChange: f.SelfStorageChange,
@@ -465,7 +353,7 @@ func (t *debankTracer) addTraceAndLog(cf *callFrame, traceAddress []int64) {
 			li++
 		} else {
 			cf.Calls[ci].ParentTraceID = cf.TraceID
-			cf.Calls[ci].TraceID = util.ToHash([]string{t.ctx.TxHash.Hex(), cf.TraceID, fmt.Sprintf("%d", cf.Calls[ci].PosInParentTrace)})
+			cf.Calls[ci].TraceID = util.ToHash([]string{t.hash.Hex(), cf.TraceID, fmt.Sprintf("%d", cf.Calls[ci].PosInParentTrace)})
 			t.addTraceAndLog(&cf.Calls[ci], childTraceAddress(traceAddress, int64(ci)))
 			ci++
 		}
@@ -479,40 +367,6 @@ func (t *debankTracer) addTraceAndLog(cf *callFrame, traceAddress []int64) {
 	}
 }
 
-func (t *debankTracer) ToStorageDiff() dtypes.TransactionStateDiff {
-	stateDiff := dtypes.TransactionStateDiff{}
-	for hash := range t.DeletedAccounts {
-		stateDiff.DeletedAccounts = append(stateDiff.DeletedAccounts, hash)
-	}
-	for _, account := range t.NewAccounts {
-		stateDiff.NewAccounts = append(stateDiff.NewAccounts, *account)
-	}
-	for account, storage := range t.StorageDiff {
-		values := make([]dtypes.IndexValuePair, 0, len(storage))
-		for index, v := range storage {
-			value := uint256.NewInt(0)
-			if len(v) > 0 {
-				value = uint256.NewInt(0).SetBytes(v)
-			}
-			values = append(values, dtypes.IndexValuePair{
-				Index: index,
-				Value: value,
-			})
-		}
-		stateDiff.StorageDiff = append(stateDiff.StorageDiff, dtypes.AccountStorageDiff{
-			Address: account,
-			Values:  values,
-		})
-	}
-	for hash, code := range t.NewCodes {
-		stateDiff.NewCodes = append(stateDiff.NewCodes, dtypes.NewCode{
-			CodeHash: hash,
-			Code:     code,
-		})
-	}
-	return stateDiff
-}
-
 func (t *debankTracer) getStorageAddresses() []string {
 	res := make([]string, 0, len(t.storageChanges))
 	for address := range t.storageChanges {
@@ -521,11 +375,8 @@ func (t *debankTracer) getStorageAddresses() []string {
 	return res
 }
 
-// finalize runs the DeBank post-tx assembly (cosmos-evm CaptureTxEnd): propagate
-// failure/storage flags, assign trace ids, and flatten the call tree into the
-// traces/logs (and their error variants). The per-tx Transaction is NOT built
-// here — Cronos's standard hooks cannot supply nonce/gasPrice/status, so it is
-// assembled in the RPC layer from the real tx.
+// finalize propagates failure and storage flags, assigns trace ids and flattens
+// the call tree into committed and error traces and logs.
 func (t *debankTracer) finalize() {
 	if t.done {
 		return
@@ -537,7 +388,7 @@ func (t *debankTracer) finalize() {
 	setParentFailed(&t.callstack[0], false)
 	setStorageChange(&t.callstack[0])
 	top := &t.callstack[0]
-	top.TraceID = util.ToHash([]string{t.ctx.TxHash.Hex(), "", "0"})
+	top.TraceID = util.ToHash([]string{t.hash.Hex(), "", "0"})
 	if top.failed() {
 		t.errorTraces = append(t.errorTraces, t.ToTrace(top, []int64{}))
 	} else {
@@ -546,21 +397,17 @@ func (t *debankTracer) finalize() {
 	t.addTraceAndLog(top, []int64{})
 }
 
-func (t *debankTracer) GetResult() (json.RawMessage, error) {
-	t.commitStateDiff() // no-op if OnTxEnd already ran; safety net otherwise
+func (t *debankTracer) result() (json.RawMessage, error) {
+	t.commitStorageChanges()
 	t.finalize()
-	if t.frameGas && (t.entered == 0 || len(t.callstack) != 1 || t.entered != len(t.traces)+len(t.errorTraces)) {
+	if t.entered == 0 || len(t.callstack) != 1 || t.entered != len(t.traces)+len(t.errorTraces) {
 		return nil, fmt.Errorf("incomplete call tree: %d entries, %d open frames, %d output frames", t.entered, len(t.callstack), len(t.traces)+len(t.errorTraces))
 	}
-	result := &dtypes.TraceResult{
+	return json.Marshal(&dtypes.TraceResult{
 		Traces:           t.traces,
 		Events:           t.logs,
 		ErrorTraces:      t.errorTraces,
 		ErrorEvents:      t.errorLogs,
-		StateDiff:        t.ToStorageDiff(),
 		StorageContracts: t.getStorageAddresses(),
-	}
-	return json.Marshal(result)
+	})
 }
-
-func (t *debankTracer) Stop(_ error) {}

@@ -43,7 +43,6 @@ func (s *stubBackend) HeaderByHash(_ common.Hash) (*ethtypes.Header, error) { re
 func (s *stubBackend) TendermintBlockByHash(_ common.Hash) (*coretypes.ResultBlock, error) {
 	return nil, nil
 }
-
 func (s *stubBackend) BlockTimesByRange(minHeight, maxHeight int64) map[int64]uint64 {
 	s.blockTimesQueries++
 	if s.blockTimesFail {
@@ -55,7 +54,6 @@ func (s *stubBackend) BlockTimesByRange(minHeight, maxHeight int64) map[int64]ui
 	}
 	return times
 }
-
 func (s *stubBackend) TendermintBlockResultByNumber(_ *int64) (*coretypes.ResultBlockResults, error) {
 	return &coretypes.ResultBlockResults{}, nil
 }

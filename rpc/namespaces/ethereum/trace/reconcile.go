@@ -8,21 +8,20 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
+	"github.com/evmos/ethermint/debank/replay"
 	dtypes "github.com/evmos/ethermint/debank/types"
 	rpctypes "github.com/evmos/ethermint/rpc/types"
 )
 
-// consensusReceipt is the stored consensus truth for one transaction.
+// consensusReceipt is the committed receipt of one EVM transaction.
 type consensusReceipt struct {
 	Status  bool
 	GasUsed uint64
 	Logs    []*ethtypes.Log
 }
 
-// loadConsensus builds the per-tx consensus map for a block from the node's
-// own receipt path (CometBFT block results). Failing to load it fails the
-// whole trace: emitting unreconciled data would silently reintroduce the
-// replay-divergence class this exists to fix.
+// loadConsensus loads the block's EVM receipts; any malformed receipt fails
+// the whole block.
 func (api *API) loadConsensus(blockHeight rpctypes.BlockNumber) (map[string]*consensusReceipt, error) {
 	rcpts, err := api.backend.GetBlockReceipts(rpctypes.BlockNumberOrHash{BlockNumber: &blockHeight})
 	if err != nil {
@@ -69,26 +68,12 @@ func (api *API) loadConsensus(blockHeight rpctypes.BlockNumber) (map[string]*con
 	return cons, nil
 }
 
-func (msg includedMessage) receiptTrace(receipt *consensusReceipt) (dtypes.TraceResult, error) {
+func receiptTrace(obs replay.Transaction, receipt *consensusReceipt) (dtypes.TraceResult, error) {
 	var tr dtypes.TraceResult
-	if msg.blockGasError != "" && len(msg.Trace) == 0 {
-		// The keeper did not observe an EVM call for this included message.
-		return tr, nil
-	}
-	if err := json.Unmarshal(msg.Trace, &tr); err != nil {
+	if err := json.Unmarshal(obs.Trace, &tr); err != nil {
 		return tr, err
 	}
-	if msg.blockGasError != "" {
-		for i := range tr.Traces {
-			if len(tr.Traces[i].TraceAddress) == 0 {
-				tr.Traces[i].Error = msg.blockGasError
-			}
-		}
-		tr.ErrorTraces = append(tr.Traces, tr.ErrorTraces...)
-		tr.ErrorEvents = append(tr.Events, tr.ErrorEvents...)
-		tr.Traces, tr.Events, tr.StorageContracts = nil, nil, nil
-	}
-	return tr, checkReceipt(&tr, msg.Hash.Hex(), receipt)
+	return tr, checkReceipt(&tr, obs.Hash.Hex(), receipt)
 }
 
 // checkReceipt leaves call-frame gas and ownership intact. Committed log

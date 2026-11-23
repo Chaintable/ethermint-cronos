@@ -21,7 +21,6 @@ import (
 	rpctypes "github.com/evmos/ethermint/rpc/types"
 	"github.com/evmos/ethermint/tests"
 	evmtypes "github.com/evmos/ethermint/x/evm/types"
-	"github.com/stretchr/testify/mock"
 )
 
 func (suite *BackendTestSuite) TestTraceTransaction() {
@@ -132,7 +131,6 @@ func (suite *BackendTestSuite) TestTraceTransaction() {
 				RegisterBlockMultipleTxs(client, 1, []types.Tx{txBz, txBz2})
 				feeMarketClient := suite.backend.queryClient.FeeMarket.(*mocks.FeeMarketQueryClient)
 				RegisterFeeMarketParams(feeMarketClient, 1)
-				registerTraceConsensusParams(client)
 				RegisterTraceTransactionWithPredecessors(queryClient, msgEthereumTx, []*evmtypes.MsgEthereumTx{msgEthereumTx})
 			},
 			&types.Block{Header: types.Header{Height: 1, ChainID: ChainID}, Data: types.Data{Txs: []types.Tx{txBz, txBz2}}},
@@ -175,7 +173,6 @@ func (suite *BackendTestSuite) TestTraceTransaction() {
 				RegisterBlock(client, 1, txBz)
 				feeMarketClient := suite.backend.queryClient.FeeMarket.(*mocks.FeeMarketQueryClient)
 				RegisterFeeMarketParams(feeMarketClient, 1)
-				registerTraceConsensusParams(client)
 				RegisterTraceTransaction(queryClient, msgEthereumTx)
 			},
 			&types.Block{Header: types.Header{Height: 1}, Data: types.Data{Txs: []types.Tx{txBz}}},
@@ -270,7 +267,6 @@ func (suite *BackendTestSuite) TestTraceTransactionWithReplay() {
 				RegisterBlock(client, 1, txBz)
 				feeMarketClient := suite.backend.queryClient.FeeMarket.(*mocks.FeeMarketQueryClient)
 				RegisterFeeMarketParams(feeMarketClient, 1)
-				registerTraceConsensusParams(client)
 				RegisterTraceTransactionWithReplay(queryClient, msgEthereumTx)
 			},
 			&types.Block{Header: types.Header{Height: 1}, Data: types.Data{Txs: []types.Tx{txBz}}},
@@ -391,7 +387,6 @@ func (suite *BackendTestSuite) TestTraceBlock() {
 				RegisterTraceBlock(queryClient, []*evmtypes.MsgEthereumTx{msgEthTx})
 				client := suite.backend.clientCtx.Client.(*mocks.Client)
 				RegisterBlockResults(client, 1)
-				registerTraceConsensusParams(client)
 			},
 			[]*evmtypes.TxTraceResult{},
 			&resBlockFilled,
@@ -485,13 +480,4 @@ func (suite *BackendTestSuite) TestDebugTraceCall() {
 			}
 		})
 	}
-}
-
-// registerTraceConsensusParams exercises forwarding of the historical block gas limit.
-func registerTraceConsensusParams(client *mocks.Client) {
-	params := types.DefaultConsensusParams()
-	params.Block.MaxGas = 60000000
-	client.On("ConsensusParams", mock.Anything, mock.MatchedBy(func(height *int64) bool {
-		return height != nil && *height == 1
-	})).Return(&tmrpctypes.ResultConsensusParams{ConsensusParams: *params}, nil).Once()
 }

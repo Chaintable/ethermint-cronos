@@ -61,9 +61,9 @@ func NewAPI(
 	}
 }
 
-// DebankBlock replays block N at the N-1 state and returns the DeBank block
-// file + header + RLP-encoded state diff + validation hash. Exposed as the
-// JSON-RPC method `trace_debankBlock`.
+// DebankBlock replays the full Cosmos block on its parent state and returns the
+// DeBank block file, header, RLP-encoded state diff and validation hash.
+// Exposed as the JSON-RPC method `trace_debankBlock`.
 func (api *API) DebankBlock(ctx context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (json.RawMessage, error) {
 	output, err := api.DebankBlockRaw(ctx, blockNrOrHash)
 	if err != nil {
@@ -239,7 +239,7 @@ func (api *API) nextBlock(height rpctypes.BlockNumber) (*ctypes.ResultBlock, err
 	return next, nil
 }
 
-func assembleBlockFile(block map[string]interface{}, transactions []interface{}, ethMsgs []*evmtypes.MsgEthereumTx, baseFee *big.Int, observed []includedMessage, consensus map[string]*consensusReceipt) (*dtypes.BlockFile, map[common.Address]struct{}, error) {
+func assembleBlockFile(block map[string]interface{}, transactions []interface{}, ethMsgs []*evmtypes.MsgEthereumTx, baseFee *big.Int, observed []replay.Transaction, consensus map[string]*consensusReceipt) (*dtypes.BlockFile, map[common.Address]struct{}, error) {
 	if len(ethMsgs) != len(transactions) || len(observed) != len(ethMsgs) || len(consensus) != len(ethMsgs) {
 		return nil, nil, fmt.Errorf("EVM count mismatch: %d msgs, %d RPC txs, %d observations, %d receipts", len(ethMsgs), len(transactions), len(observed), len(consensus))
 	}
@@ -264,7 +264,7 @@ func assembleBlockFile(block map[string]interface{}, transactions []interface{},
 		if receipt == nil {
 			return nil, nil, fmt.Errorf("tx[%d] missing receipt", i)
 		}
-		traceResult, err := obs.receiptTrace(receipt)
+		traceResult, err := receiptTrace(obs, receipt)
 		if err != nil {
 			return nil, nil, fmt.Errorf("tx[%d]: %w", i, err)
 		}
