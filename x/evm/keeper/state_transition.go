@@ -140,7 +140,7 @@ func (k Keeper) GetHashFn() vm.GetHashFunc {
 // returning.
 //
 // For relevant discussion see: https://github.com/cosmos/cosmos-sdk/discussions/9072
-func (k *Keeper) ApplyTransaction(tx *ethtypes.Transaction) (*types.MsgEthereumTxResponse, error) {
+func (k *Keeper) ApplyTransaction(tx *ethtypes.Transaction) (res *types.MsgEthereumTxResponse, err error) {
 	ctx := k.Ctx()
 	params := k.GetParams(ctx)
 
@@ -172,6 +172,11 @@ func (k *Keeper) ApplyTransaction(tx *ethtypes.Transaction) (*types.MsgEthereumT
 
 	// create an ethereum EVM instance and run the message
 	tracer := types.NewTracer(k.tracer, msg, ethCfg, ctx.BlockHeight())
+	if k.observer != nil {
+		var finish func(*types.MsgEthereumTxResponse, error)
+		tracer, finish = k.observer(tx.Hash())
+		defer func() { finish(res, err) }()
+	}
 	evm := k.NewEVM(msg, ethCfg, params, coinbase, tracer)
 
 	txHash := tx.Hash()
@@ -192,7 +197,7 @@ func (k *Keeper) ApplyTransaction(tx *ethtypes.Transaction) (*types.MsgEthereumT
 	}
 
 	// pass false to execute in real mode, which do actual gas refunding
-	res, err := k.ApplyMessage(evm, msg, ethCfg, false)
+	res, err = k.ApplyMessage(evm, msg, ethCfg, false)
 	if err != nil {
 		return nil, stacktrace.Propagate(err, "failed to apply ethereum core message")
 	}
