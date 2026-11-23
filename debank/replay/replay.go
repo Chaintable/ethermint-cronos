@@ -22,8 +22,6 @@ type Request struct {
 	ChainID    string
 	ParentHash []byte
 	Request    *abci.RequestFinalizeBlock
-	// BlockFileOnly skips the work that only serves the state diff.
-	BlockFileOnly bool
 }
 
 type Transaction struct {

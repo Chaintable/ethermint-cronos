@@ -41,7 +41,7 @@ func TestReplayResultAndConsensus(t *testing.T) {
 // The worker request crosses the process boundary as sonic JSON.
 func TestRequestJSON(t *testing.T) {
 	at := time.Unix(1700000000, 123).UTC()
-	req := Request{ChainID: "cronosmainnet_25-1", ParentHash: bytes.Repeat([]byte{9}, 32), BlockFileOnly: true, Request: &abci.RequestFinalizeBlock{
+	req := Request{ChainID: "cronosmainnet_25-1", ParentHash: bytes.Repeat([]byte{9}, 32), Request: &abci.RequestFinalizeBlock{
 		Txs: [][]byte{{1, 2}}, Hash: bytes.Repeat([]byte{3}, 32), Height: 101485001, Time: at,
 		ProposerAddress:    bytes.Repeat([]byte{4}, 20),
 		NextValidatorsHash: bytes.Repeat([]byte{5}, 32),
