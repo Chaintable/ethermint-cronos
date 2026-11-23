@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -403,7 +404,7 @@ func (t *debankTracer) result() (json.RawMessage, error) {
 	if t.entered == 0 || len(t.callstack) != 1 || t.entered != len(t.traces)+len(t.errorTraces) {
 		return nil, fmt.Errorf("incomplete call tree: %d entries, %d open frames, %d output frames", t.entered, len(t.callstack), len(t.traces)+len(t.errorTraces))
 	}
-	return json.Marshal(&dtypes.TraceResult{
+	return sonic.ConfigStd.Marshal(&dtypes.TraceResult{
 		Traces:           t.traces,
 		Events:           t.logs,
 		ErrorTraces:      t.errorTraces,

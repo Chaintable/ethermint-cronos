@@ -62,21 +62,29 @@ func NewAPI(
 }
 
 // DebankBlock replays the full Cosmos block on its parent state and returns the
-// DeBank block file, header, RLP-encoded state diff and validation hash.
-// Exposed as the JSON-RPC method `trace_debankBlock`.
+// DeBank block file, header, RLP-encoded state diff and validation hash, or only
+// the block file in block-file-only mode. Exposed as the JSON-RPC method
+// `trace_debankBlock`.
 func (api *API) DebankBlock(ctx context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (json.RawMessage, error) {
 	output, err := api.DebankBlockRaw(ctx, blockNrOrHash)
 	if err != nil {
 		return nil, err
 	}
+	return encodeOutput(output)
+}
+
+// encodeOutput marshals with sonic instead of the RPC codec's encoding/json,
+// which dominated CPU for large responses. ConfigStd keeps the bytes identical.
+func encodeOutput(output *dtypes.DebankOutPut) (json.RawMessage, error) {
+	if output.StateDiff == nil {
+		return sonic.ConfigStd.Marshal(&struct {
+			BlockFile *dtypes.BlockFile `json:"block_file"`
+		}{output.BlockFile})
+	}
 	data, err := rlp.EncodeToBytes(output.StateDiff)
 	if err != nil {
 		return nil, err
 	}
-	// Marshal here with sonic (SIMD/JIT) and return raw JSON, instead of letting
-	// go-ethereum's RPC codec marshal the struct with reflection-based
-	// encoding/json — the trace response (hundreds of traces/events) is the top
-	// CPU consumer. ConfigStd keeps the output byte-compatible with the stdlib.
 	return sonic.ConfigStd.Marshal(&dtypes.DebankOutPutJs{
 		BlockFile:      output.BlockFile,
 		Header:         output.Header,
@@ -119,6 +127,10 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	if err = api.executor.CheckReplayHeight(resBlock.Block.ChainID, int64(blockHeight)); err != nil {
 		return nil, err
 	}
+	blockFileOnly, err := api.executor.BlockFileOnly()
+	if err != nil {
+		return nil, err
+	}
 
 	blockRes, err := api.backend.TendermintBlockResultByNumber(&resBlock.Block.Height)
 	if err != nil {
@@ -132,6 +144,7 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	if err != nil {
 		return nil, err
 	}
+	req.BlockFileOnly = blockFileOnly
 	result, err := api.executor.ReplayBlock(ctx, req)
 	if err != nil {
 		return nil, err
@@ -183,6 +196,18 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 	if err != nil {
 		return nil, err
 	}
+	// StorageContracts also include tx endpoints and native-CRO bank-event addresses.
+	for addr := range bankdiff.CoinTouchedAddresses(blockRes, evmDenom) {
+		fromToAddress[addr] = struct{}{}
+	}
+	blockFile.StorageContracts = mergeStorageContracts(fromToAddress, blockFile.StorageContracts)
+	if blockFileOnly {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		return &dtypes.DebankOutPut{BlockFile: blockFile}, nil
+	}
+
 	previousDenom, err := api.evmDenom(blockHeight - 1)
 	if err != nil {
 		return nil, err
@@ -197,15 +222,6 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		return nil, fmt.Errorf("load canonical state diff for block %d: %w", blockHeight, err)
 	}
 	stateDiff := dtracer.BuildBlockStateDiff(common.BytesToHash(parentRoot), stateHeader.StateRoot, canonical)
-
-	// Preserve the existing BlockFile.StorageContracts discovery from tx and
-	// native-CRO bank-event addresses; it no longer supplies stateDiff accounts.
-	for addr := range bankdiff.CoinTouchedAddresses(blockRes, evmDenom) {
-		fromToAddress[addr] = struct{}{}
-	}
-
-	blockFile.StorageContracts = mergeStorageContracts(fromToAddress, blockFile.StorageContracts)
-
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

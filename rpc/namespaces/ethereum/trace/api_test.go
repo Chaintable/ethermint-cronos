@@ -3,6 +3,7 @@ package trace
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -13,6 +14,8 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/rlp"
+	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -70,4 +73,23 @@ func TestNextBlockRequired(t *testing.T) {
 	next, err := (&API{backend: headBackend{head: 101}}).nextBlock(100)
 	require.NoError(t, err)
 	require.Equal(t, int64(101), next.Block.Height)
+}
+
+func TestEncodeOutput(t *testing.T) {
+	file := &dtypes.BlockFile{Block: dtypes.Block{ID: "0x01"}}
+	slim, err := encodeOutput(&dtypes.DebankOutPut{BlockFile: file})
+	require.NoError(t, err)
+	var keys map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(slim, &keys))
+	require.Len(t, keys, 1)
+	require.Contains(t, keys, "block_file")
+
+	full := &dtypes.DebankOutPut{BlockFile: file, Header: &dtypes.Header{}, StateDiff: &dtypes.BlockStorageDiff{}, ValidationHash: 7}
+	got, err := encodeOutput(full)
+	require.NoError(t, err)
+	data, err := rlp.EncodeToBytes(full.StateDiff)
+	require.NoError(t, err)
+	want, err := json.Marshal(&dtypes.DebankOutPutJs{BlockFile: file, Header: full.Header, StateDiff: data, ValidationHash: 7})
+	require.NoError(t, err)
+	require.Equal(t, string(want), string(got))
 }

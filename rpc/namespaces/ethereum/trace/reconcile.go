@@ -1,10 +1,10 @@
 package trace
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/bytedance/sonic"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
 
@@ -70,7 +70,7 @@ func (api *API) loadConsensus(blockHeight rpctypes.BlockNumber) (map[string]*con
 
 func receiptTrace(obs replay.Transaction, receipt *consensusReceipt) (dtypes.TraceResult, error) {
 	var tr dtypes.TraceResult
-	if err := json.Unmarshal(obs.Trace, &tr); err != nil {
+	if err := sonic.ConfigStd.Unmarshal(obs.Trace, &tr); err != nil {
 		return tr, err
 	}
 	return tr, checkReceipt(&tr, obs.Hash.Hex(), receipt)
