@@ -37,6 +37,10 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ## Unreleased
 
+### Features
+
+- (rpc) `trace_debankBlock` replays an archived block on its parent state and returns the DeBank block file.
+
 ### Bug Fixes
 
 * (rpc) [crypto-org-chain#42](https://github.com/crypto-org-chain/ethermint/pull/42) Fix `eth_getLogs` when specify blockHash without address/topics, and limit the response size.
