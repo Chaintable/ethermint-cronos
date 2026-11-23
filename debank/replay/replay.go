@@ -10,6 +10,7 @@ import (
 	"io"
 	"slices"
 
+	"github.com/bytedance/sonic"
 	"github.com/cosmos/gogoproto/proto"
 
 	abci "github.com/cometbft/cometbft/abci/types"
@@ -21,6 +22,8 @@ type Request struct {
 	ChainID    string
 	ParentHash []byte
 	Request    *abci.RequestFinalizeBlock
+	// BlockFileOnly skips the work that only serves the state diff.
+	BlockFileOnly bool
 }
 
 type Transaction struct {
@@ -49,12 +52,12 @@ func WriteResult(w io.Writer, r Result) error {
 	if err != nil {
 		return err
 	}
-	return json.NewEncoder(w).Encode(workerResult{b, r.Transactions})
+	return sonic.ConfigStd.NewEncoder(w).Encode(workerResult{b, r.Transactions})
 }
 
 func ReadResult(r io.Reader) (*Result, error) {
 	var wire workerResult
-	if err := json.NewDecoder(r).Decode(&wire); err != nil {
+	if err := sonic.ConfigStd.NewDecoder(r).Decode(&wire); err != nil {
 		return nil, err
 	}
 	res := new(abci.ResponseFinalizeBlock)
@@ -67,6 +70,8 @@ func ReadResult(r io.Reader) (*Result, error) {
 type Executor interface {
 	CheckReplayHeight(string, int64) error
 	ReplayBlock(context.Context, Request) (*Result, error)
+	// BlockFileOnly reports whether trace_debankBlock returns only the block file.
+	BlockFileOnly() (bool, error)
 }
 
 // Verify compares deterministic ABCI fields in execution order. Index is a

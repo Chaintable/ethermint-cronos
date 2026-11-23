@@ -2,8 +2,11 @@ package replay
 
 import (
 	"bytes"
+	"encoding/json"
 	"testing"
+	"time"
 
+	"github.com/bytedance/sonic"
 	abci "github.com/cometbft/cometbft/abci/types"
 	cryptoproto "github.com/cometbft/cometbft/proto/tendermint/crypto"
 	ctypes "github.com/cometbft/cometbft/rpc/core/types"
@@ -33,4 +36,24 @@ func TestReplayResultAndConsensus(t *testing.T) {
 	got.Finalize.Events[0].Attributes[0].Value = "a"
 	got.Finalize.AppHash[0]++
 	require.ErrorContains(t, Verify(canonical, got.Finalize), "AppHash")
+}
+
+// The worker request crosses the process boundary as sonic JSON.
+func TestRequestJSON(t *testing.T) {
+	at := time.Unix(1700000000, 123).UTC()
+	req := Request{ChainID: "cronosmainnet_25-1", ParentHash: bytes.Repeat([]byte{9}, 32), BlockFileOnly: true, Request: &abci.RequestFinalizeBlock{
+		Txs: [][]byte{{1, 2}}, Hash: bytes.Repeat([]byte{3}, 32), Height: 101485001, Time: at,
+		ProposerAddress:    bytes.Repeat([]byte{4}, 20),
+		NextValidatorsHash: bytes.Repeat([]byte{5}, 32),
+		DecidedLastCommit:  abci.CommitInfo{Round: 1, Votes: []abci.VoteInfo{{Validator: abci.Validator{Address: bytes.Repeat([]byte{6}, 20), Power: 10}, BlockIdFlag: 2}}},
+		Misbehavior:        []abci.Misbehavior{{Type: abci.MisbehaviorType_DUPLICATE_VOTE, Validator: abci.Validator{Power: 1}, Height: 3, Time: at, TotalVotingPower: 11}},
+	}}
+	data, err := sonic.ConfigStd.Marshal(req)
+	require.NoError(t, err)
+	std, err := json.Marshal(req)
+	require.NoError(t, err)
+	require.Equal(t, string(std), string(data))
+	var got Request
+	require.NoError(t, sonic.ConfigStd.Unmarshal(data, &got))
+	require.Equal(t, req, got)
 }
