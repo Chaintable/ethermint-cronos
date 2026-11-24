@@ -37,6 +37,10 @@ Ref: https://keepachangelog.com/en/1.0.0/
 
 ## Unreleased
 
+### Features
+
+- (rpc) `trace_debankBlock` replays an archived block on its parent state and returns the DeBank block file.
+
 ### Improvements
 
 * (evm) [tharsis#1124](https://github.com/tharsis/ethermint/pull/1124) Reject non-replay-protected tx in ante handler to prevent replay attack
