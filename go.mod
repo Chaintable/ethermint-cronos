@@ -164,4 +164,4 @@ replace (
 	google.golang.org/grpc => google.golang.org/grpc v1.33.2
 )
 
-replace github.com/ethereum/go-ethereum => github.com/Chaintable/go-ethereum v1.10.10-0.20261124125948-1e5f09b57388
+replace github.com/ethereum/go-ethereum => github.com/Chaintable/go-ethereum v1.10.10-0.20261124152011-e65b58f19ebe
