@@ -80,3 +80,17 @@ func TestFixUnluckyTxArchive(t *testing.T) {
 	// A failure ante rejected before execution is never excused.
 	require.False(t, ExceedsBlockGas(archived.DeliverTxs[4]))
 }
+
+// At mainnet H114868 the transaction that exceeded the block gas limit had
+// failed ante, so fix-unlucky-tx wrote back its code 32 re-execution.
+func TestFixUnluckyTxArchiveFailedRewrite(t *testing.T) {
+	archived, _ := mainnet6346(t)
+	row := archived.DeliverTxs[3]
+	*row = abci.ResponseDeliverTx{Code: 32, Codespace: "sdk", GasWanted: row.GasWanted, GasUsed: row.GasUsed,
+		Log: "account sequence mismatch, expected 27229, got 27244: incorrect account sequence"}
+	require.NoError(t, Verify(archived, executed(archived, 3)))
+
+	other := executed(archived, 3)
+	other.DeliverTxs[3].GasUsed++
+	require.ErrorContains(t, Verify(archived, other), "tx[3]")
+}

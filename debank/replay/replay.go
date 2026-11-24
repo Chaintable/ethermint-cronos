@@ -130,9 +130,10 @@ func ExceedsBlockGas(r *abci.ResponseDeliverTx) bool {
 }
 
 // rewrittenByFix reports an archived row that cronosd fix-unlucky-tx replaced
-// with a re-execution of a transaction that exceeded the block gas limit.
+// with a re-execution of a transaction that exceeded the block gas limit; the
+// re-execution may itself fail, e.g. with code 32 after an ante failure.
 func rewrittenByFix(archived, executed *abci.ResponseDeliverTx) bool {
-	return ExceedsBlockGas(executed) && archived.Code == 0 &&
+	return ExceedsBlockGas(executed) &&
 		archived.GasWanted == executed.GasWanted && archived.GasUsed == executed.GasUsed
 }
 
