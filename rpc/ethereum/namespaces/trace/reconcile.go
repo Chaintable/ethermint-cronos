@@ -25,6 +25,9 @@ type receipt struct {
 	// ExecutionGas is the message response's gas, which the observation reports.
 	ExecutionGas uint64
 	Logs         []*ethtypes.Log
+	// PostProcessingFailed marks a message whose Cosmos hooks failed; reverting
+	// to the snapshot before the message also undid its gas refund.
+	PostProcessingFailed bool
 }
 
 func receiptsFromResults(msgs []ethMsg, results *tmstate.ABCIResponses) ([]*receipt, error) {
@@ -57,6 +60,8 @@ func receiptsFromResults(msgs []ethMsg, results *tmstate.ABCIResponses) ([]*rece
 			GasUsed:      uint64(results.DeliverTxs[m.cosmos].GasUsed),
 			ExecutionGas: res.GasUsed,
 			Logs:         evmtypes.LogsToEthereum(res.Logs),
+
+			PostProcessingFailed: res.VmError == evmtypes.ErrPostTxProcessing.Error(),
 		})
 	}
 	return out, nil

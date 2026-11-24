@@ -359,7 +359,12 @@ func (api *API) assembleBlockFile(block dtypes.Block, msgs []ethMsg, observed []
 			return nil, nil, fmt.Errorf("tx[%d]: %w", i, err)
 		}
 		from := api.sender(msgs[i].tx)
-		tx := dtracer.BuildPipelineTransaction(realTx, int64(i), from, new(big.Int).SetUint64(receipts[i].GasUsed), receipts[i].Status)
+		gasUsed := receipts[i].GasUsed
+		if receipts[i].PostProcessingFailed {
+			// The sender paid the whole gas limit, as the current mainnet RPC reports.
+			gasUsed = realTx.Gas()
+		}
+		tx := dtracer.BuildPipelineTransaction(realTx, int64(i), from, new(big.Int).SetUint64(gasUsed), receipts[i].Status)
 		blockFile.Txs = append(blockFile.Txs, tx)
 		fromToAddress[from] = struct{}{}
 		if to := realTx.To(); to != nil {

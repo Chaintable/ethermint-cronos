@@ -206,3 +206,32 @@ func TestReportedIncludesBlockGasExceeded(t *testing.T) {
 	_, err := receiptsFromResults([]ethMsg{{cosmos: 0, tx: ethTx(0)}}, &tmstate.ABCIResponses{DeliverTxs: []*abci.ResponseDeliverTx{exceeded}})
 	require.ErrorContains(t, err, "not restored by fix-unlucky-tx")
 }
+
+// Reverting a message whose hooks failed also undoes its gas refund, so the
+// sender paid the whole gas limit (mainnet H1737384: limit 116711, DeliverTx
+// gas 109706, fee 116711 x price with no refund).
+func TestPostProcessingFailureReportsGasLimit(t *testing.T) {
+	msg := ethTx(0)
+	hash := msg.AsTransaction().Hash()
+	results := &tmstate.ABCIResponses{DeliverTxs: []*abci.ResponseDeliverTx{{
+		Data:    msgResult(t, &evmtypes.MsgEthereumTxResponse{Hash: hash.Hex(), GasUsed: 15000, VmError: evmtypes.ErrPostTxProcessing.Error()}),
+		GasUsed: 15000,
+	}}}
+	msgs := []ethMsg{{cosmos: 0, tx: msg}}
+	receipts, err := receiptsFromResults(msgs, results)
+	require.NoError(t, err)
+	require.True(t, receipts[0].PostProcessingFailed)
+	require.False(t, receipts[0].Status)
+
+	root := dtypes.Trace{TxID: hash.Hex(), TraceAddress: []int64{}, Error: evmtypes.ErrPostTxProcessing.Error()}
+	obs := []replay.Transaction{{Hash: hash, GasUsed: 15000, Failed: true, Trace: traceJSON(t, dtypes.TraceResult{ErrorTraces: []dtypes.Trace{root}})}}
+	api := &API{chainID: big.NewInt(25)}
+	bf, _, err := api.assembleBlockFile(dtypes.Block{}, msgs, obs, receipts)
+	require.NoError(t, err)
+	require.Equal(t, int64(21000), bf.Txs[0].GasUsed.Int64())
+
+	receipts[0].PostProcessingFailed = false
+	bf, _, err = api.assembleBlockFile(dtypes.Block{}, msgs, obs, receipts)
+	require.NoError(t, err)
+	require.Equal(t, int64(15000), bf.Txs[0].GasUsed.Int64())
+}
