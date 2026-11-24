@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -19,6 +20,8 @@ import (
 	"github.com/evmos/ethermint/debank/replay"
 	dtypes "github.com/evmos/ethermint/debank/types"
 	"github.com/stretchr/testify/require"
+
+	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
 func TestMergeStorageContractsPreservesAndAddsAddresses(t *testing.T) {
@@ -127,4 +130,21 @@ func TestReplayOnlyBlocksWithEVMMessages(t *testing.T) {
 	exec.result.Finalize.AppHash = bytes.Repeat([]byte{2}, 32)
 	_, err = api.replayIfNeeded(context.Background(), replay.Request{}, results, 1)
 	require.ErrorContains(t, err, "AppHash")
+}
+
+func TestEVMMsgsRejectUndecodableIncludedTx(t *testing.T) {
+	decoded := 0
+	decode := func([]byte) (sdk.Tx, error) {
+		decoded++
+		return nil, errors.New("bad tx")
+	}
+	txs := tmtypes.Txs{{1}, {2}}
+	failed := []*abci.ExecTxResult{{Code: 5, Log: "failed"}, {Code: 5, Log: "failed"}}
+	msgs, err := evmMsgsFromTxs(decode, txs, failed)
+	require.NoError(t, err)
+	require.Empty(t, msgs)
+	require.Zero(t, decoded)
+
+	_, err = evmMsgsFromTxs(decode, txs, []*abci.ExecTxResult{{Code: 5}, {Code: 0}})
+	require.ErrorContains(t, err, "decode tx[1]")
 }

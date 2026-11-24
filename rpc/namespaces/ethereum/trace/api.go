@@ -150,7 +150,10 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		return nil, fmt.Errorf("incomplete ABCI results")
 	}
 	timing.mark("results")
-	ethMsgs := api.backend.EthMsgsFromTendermintBlock(resBlock, blockRes)
+	ethMsgs, err := evmMsgsFromTxs(api.clientCtx.TxConfig.TxDecoder(), resBlock.Block.Txs, blockRes.TxsResults)
+	if err != nil {
+		return nil, err
+	}
 	timing.mark("evm_msgs")
 	if err = resBlock.Block.ValidateBasic(); err != nil {
 		return nil, err

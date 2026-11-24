@@ -14,7 +14,9 @@ import (
 	"github.com/cometbft/cometbft/rpc/client"
 	"github.com/cometbft/cometbft/state"
 	tmtypes "github.com/cometbft/cometbft/types"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/evmos/ethermint/debank/replay"
+	rpctypes "github.com/evmos/ethermint/rpc/types"
 )
 
 func (api *API) signClient() (client.SignClient, error) {
@@ -157,4 +159,25 @@ func (api *API) canonicalObservations(block *ctypes.ResultBlock, results *ctypes
 		return nil, fmt.Errorf("unexpected observation at EVM index %d", i)
 	}
 	return included, nil
+}
+
+// evmMsgsFromTxs is backend.EthMsgsFromTendermintBlock without skipping decode
+// failures, which would silently drop the transaction from the block file.
+func evmMsgsFromTxs(decode sdk.TxDecoder, txs tmtypes.Txs, results []*abci.ExecTxResult) ([]*evmtypes.MsgEthereumTx, error) {
+	var msgs []*evmtypes.MsgEthereumTx
+	for i, raw := range txs {
+		if !rpctypes.TxSuccessOrExceedsBlockGasLimit(results[i]) {
+			continue
+		}
+		tx, err := decode(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode tx[%d]: %w", i, err)
+		}
+		for _, msg := range tx.GetMsgs() {
+			if eth, ok := msg.(*evmtypes.MsgEthereumTx); ok {
+				msgs = append(msgs, eth)
+			}
+		}
+	}
+	return msgs, nil
 }
