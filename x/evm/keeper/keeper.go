@@ -53,6 +53,18 @@ type Keeper struct {
 
 	// EVM Hooks for tx post-processing
 	hooks types.EvmHooks
+
+	// observer traces signed EVM messages on private replay apps only
+	observer TransactionObserver
+}
+
+// TransactionObserver returns the tracer for one signed EVM message and a
+// function that receives the message's final result.
+type TransactionObserver func(hash common.Hash) (vm.EVMLogger, func(*types.MsgEthereumTxResponse, error))
+
+// SetTransactionObserver must only be used on an app that never serves consensus.
+func (k *Keeper) SetTransactionObserver(o TransactionObserver) {
+	k.observer = o
 }
 
 // NewKeeper generates new evm module keeper
