@@ -133,24 +133,8 @@ func ExceedsBlockGas(r *abci.ResponseDeliverTx) bool {
 // transaction exceeded the block gas limit.
 const BlockGasExceeded = "exceeds block gas limit"
 
-// patchedByFix reports an archived row to which cronosd fix-unlucky-tx only
-// appended ethereum_tx events; events are not covered by LastResultsHash.
-func patchedByFix(archived, executed *abci.ResponseDeliverTx) bool {
-	n := len(executed.Events)
-	if !ExceedsBlockGas(executed) || len(archived.Events) <= n {
-		return false
-	}
-	for _, e := range archived.Events[n:] {
-		if e.Type != "ethereum_tx" {
-			return false
-		}
-	}
-	return true
-}
-
 // Verify compares deterministic ABCI fields in execution order. Event
 // attribute Index is a node indexing preference and Log/Info are diagnostic.
-// Events that fix-unlucky-tx appended to an archived row are ignored.
 func Verify(want, got *tmstate.ABCIResponses) error {
 	if want == nil || got == nil || want.BeginBlock == nil || want.EndBlock == nil || got.BeginBlock == nil || got.EndBlock == nil {
 		return fmt.Errorf("missing block results")
@@ -174,11 +158,7 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 		case !bytes.Equal(w.Data, g.Data):
 			return fmt.Errorf("tx[%d] result data mismatch", i)
 		}
-		events := w.Events
-		if patchedByFix(w, g) {
-			events = events[:len(g.Events)]
-		}
-		if err := compareEvents(events, g.Events); err != nil {
+		if err := compareEvents(w.Events, g.Events); err != nil {
 			return fmt.Errorf("tx[%d]: %w", i, err)
 		}
 	}
