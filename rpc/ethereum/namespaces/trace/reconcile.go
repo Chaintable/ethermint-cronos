@@ -15,8 +15,9 @@ import (
 	evmtypes "github.com/tharsis/ethermint/x/evm/types"
 )
 
-// receipt is the committed result of one EVM message, decoded from its
-// DeliverTx data, which LastResultsHash of the next header commits to.
+// receipt is the result of one EVM message decoded from its archived
+// DeliverTx data. A row rewritten by fix-unlucky-tx is not covered by
+// LastResultsHash; matching it against the observed execution checks it.
 type receipt struct {
 	Status bool
 	// GasUsed is the Cosmos transaction's gas, which the receipt reports.
@@ -30,6 +31,9 @@ func receiptsFromResults(msgs []ethMsg, results *tmstate.ABCIResponses) ([]*rece
 	out := make([]*receipt, 0, len(msgs))
 	decoded := map[int]*sdk.TxMsgData{}
 	for _, m := range msgs {
+		if replay.ExceedsBlockGas(results.DeliverTxs[m.cosmos]) {
+			return nil, fmt.Errorf("tx[%d]: result exceeding the block gas limit was not restored by fix-unlucky-tx", m.cosmos)
+		}
 		data := decoded[m.cosmos]
 		if data == nil {
 			data = new(sdk.TxMsgData)

@@ -162,19 +162,6 @@ func (api *API) DebankBlockRaw(ctx context.Context, id rpctypes.BlockNumberOrHas
 	if err = block.ValidateBasic(); err != nil {
 		return nil, err
 	}
-	// Only a replay needs the parent validators.
-	var req replay.Request
-	if len(msgs) > 0 {
-		if req, err = api.replayRequest(block); err != nil {
-			return nil, err
-		}
-	}
-	timing.mark("request")
-	result, err := api.replayIfNeeded(ctx, req, results, len(msgs))
-	if err != nil {
-		return nil, err
-	}
-	timing.mark("replay")
 	// Only the next header attests the results and application root of this block.
 	next, err := api.chain.Header(height + 1)
 	if err != nil {
@@ -183,13 +170,32 @@ func (api *API) DebankBlockRaw(ctx context.Context, id rpctypes.BlockNumberOrHas
 	if !bytes.Equal(next.LastBlockID.Hash, hash) {
 		return nil, fmt.Errorf("next header parent hash mismatch")
 	}
-	if !bytes.Equal(next.LastResultsHash, sm.ABCIResponsesResultsHash(results)) {
-		return nil, fmt.Errorf("next header LastResultsHash mismatch")
-	}
-	if result != nil && !bytes.Equal(next.AppHash, result.AppHash) {
-		return nil, fmt.Errorf("next header AppHash mismatch")
-	}
+	// Archives patched by cronosd fix-unlucky-tx store results that differ
+	// from consensus; only a replay can attest such a block.
+	attested := bytes.Equal(next.LastResultsHash, sm.ABCIResponsesResultsHash(results))
+	replayNeeded := len(msgs) > 0 || !attested
 	timing.mark("next_header")
+	// Only a replay needs the parent validators.
+	var req replay.Request
+	if replayNeeded {
+		if req, err = api.replayRequest(block); err != nil {
+			return nil, err
+		}
+	}
+	timing.mark("request")
+	result, err := api.replayIfNeeded(ctx, req, results, replayNeeded)
+	if err != nil {
+		return nil, err
+	}
+	if result != nil {
+		if !bytes.Equal(next.LastResultsHash, sm.ABCIResponsesResultsHash(result.Responses)) {
+			return nil, fmt.Errorf("next header LastResultsHash mismatch")
+		}
+		if !bytes.Equal(next.AppHash, result.AppHash) {
+			return nil, fmt.Errorf("next header AppHash mismatch")
+		}
+	}
+	timing.mark("replay")
 
 	miner, err := api.miner(block)
 	if err != nil {
@@ -271,10 +277,10 @@ func (p *phaseTimer) fields(prefix ...interface{}) []interface{} {
 	return append(append(prefix, p.phases...), "total_ms", time.Since(p.start).Milliseconds())
 }
 
-// replayIfNeeded executes the block unless it has no committed EVM messages:
-// such a block yields no traces.
-func (api *API) replayIfNeeded(ctx context.Context, req replay.Request, results *tmstate.ABCIResponses, ethMsgs int) (*replay.Result, error) {
-	if ethMsgs == 0 {
+// replayIfNeeded executes the block unless it has no reported EVM messages
+// and its archived results are attested; such a block yields no traces.
+func (api *API) replayIfNeeded(ctx context.Context, req replay.Request, results *tmstate.ABCIResponses, needed bool) (*replay.Result, error) {
+	if !needed {
 		return nil, nil
 	}
 	result, err := api.executor.ReplayBlock(ctx, req)

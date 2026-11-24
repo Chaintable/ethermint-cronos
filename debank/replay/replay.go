@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/ethereum/go-ethereum/common"
@@ -120,8 +121,25 @@ type Executor interface {
 	BlockFileOnly() (bool, error)
 }
 
+// ExceedsBlockGas reports a transaction that executed and was committed but
+// exceeded the block gas limit afterwards. The SDK of this version charges
+// block gas only after writing the messages, so the result is code 11 while
+// the state changes stay.
+func ExceedsBlockGas(r *abci.ResponseDeliverTx) bool {
+	return r.Code == 11 && strings.Contains(r.Log, "out of gas in location: block gas meter; gasWanted:")
+}
+
+// rewrittenByFix reports an archived row that cronosd fix-unlucky-tx replaced
+// with a re-execution of a transaction that exceeded the block gas limit.
+func rewrittenByFix(archived, executed *abci.ResponseDeliverTx) bool {
+	return ExceedsBlockGas(executed) && archived.Code == 0 &&
+		archived.GasWanted == executed.GasWanted && archived.GasUsed == executed.GasUsed
+}
+
 // Verify compares deterministic ABCI fields in execution order. Event
 // attribute Index is a node indexing preference and Log/Info are diagnostic.
+// A row rewritten by fix-unlucky-tx is not compared here; the caller checks
+// its data against the observed execution.
 func Verify(want, got *tmstate.ABCIResponses) error {
 	if want == nil || got == nil || want.BeginBlock == nil || want.EndBlock == nil || got.BeginBlock == nil || got.EndBlock == nil {
 		return fmt.Errorf("missing block results")
@@ -136,6 +154,9 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 		g := got.DeliverTxs[i]
 		if w == nil || g == nil {
 			return fmt.Errorf("tx[%d]: missing result", i)
+		}
+		if rewrittenByFix(w, g) {
+			continue
 		}
 		switch {
 		case w.Code != g.Code || w.Codespace != g.Codespace:

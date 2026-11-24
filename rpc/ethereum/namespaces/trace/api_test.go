@@ -194,3 +194,15 @@ func TestReplayRequest(t *testing.T) {
 	_, err = api.replayRequest(b)
 	require.ErrorContains(t, err, "parent validator hash")
 }
+
+func TestReportedIncludesBlockGasExceeded(t *testing.T) {
+	exceeded := &abci.ResponseDeliverTx{Code: 11, Log: "out of gas in location: block gas meter; gasWanted: 0, gasUsed: 1: out of gas"}
+	require.True(t, reported(&abci.ResponseDeliverTx{}))
+	require.True(t, reported(exceeded))
+	require.False(t, reported(&abci.ResponseDeliverTx{Code: 11, Log: "no block gas left to run tx: out of gas"}))
+	require.False(t, reported(&abci.ResponseDeliverTx{Code: 5}))
+
+	// An archive without fix-unlucky-tx has no data for the committed message.
+	_, err := receiptsFromResults([]ethMsg{{cosmos: 0, tx: ethTx(0)}}, &tmstate.ABCIResponses{DeliverTxs: []*abci.ResponseDeliverTx{exceeded}})
+	require.ErrorContains(t, err, "not restored by fix-unlucky-tx")
+}

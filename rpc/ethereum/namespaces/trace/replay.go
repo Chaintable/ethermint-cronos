@@ -13,8 +13,9 @@ import (
 	evmtypes "github.com/tharsis/ethermint/x/evm/types"
 )
 
-// ethMsg is an EVM message of a successful Cosmos transaction, the only ones
-// the Ethereum RPC of this version reports.
+// ethMsg is an EVM message the Cronos RPC of this version reports: from a
+// successful Cosmos transaction, or from one committed before it exceeded the
+// block gas limit.
 type ethMsg struct {
 	cosmos, msg int
 	tx          *evmtypes.MsgEthereumTx
@@ -23,7 +24,7 @@ type ethMsg struct {
 func (api *API) ethMsgs(block *tmtypes.Block, results *tmstate.ABCIResponses) ([]ethMsg, error) {
 	var out []ethMsg
 	for i, raw := range block.Txs {
-		if results.DeliverTxs[i].Code != 0 {
+		if !reported(results.DeliverTxs[i]) {
 			continue
 		}
 		tx, err := api.txDecoder(raw)
@@ -37,6 +38,10 @@ func (api *API) ethMsgs(block *tmtypes.Block, results *tmstate.ABCIResponses) ([
 		}
 	}
 	return out, nil
+}
+
+func reported(r *abci.ResponseDeliverTx) bool {
+	return r.Code == 0 || replay.ExceedsBlockGas(r)
 }
 
 // parentHeader returns header H-1 after checking that block H references it.
@@ -129,7 +134,7 @@ func canonicalObservations(msgs []ethMsg, results *tmstate.ABCIResponses, replay
 		if obs.CosmosIndex < 0 || obs.CosmosIndex >= len(results.DeliverTxs) {
 			return nil, fmt.Errorf("invalid observed Cosmos index %d", obs.CosmosIndex)
 		}
-		if results.DeliverTxs[obs.CosmosIndex].Code == 0 {
+		if reported(results.DeliverTxs[obs.CosmosIndex]) {
 			selected = append(selected, obs)
 		}
 	}
