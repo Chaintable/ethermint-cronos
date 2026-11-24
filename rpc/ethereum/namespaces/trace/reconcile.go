@@ -122,10 +122,28 @@ func checkReceipt(tr *dtypes.TraceResult, obs replay.Transaction, rc *receipt) e
 			return fmt.Errorf("receipt log[%d] content differs from frame event", i)
 		}
 	}
-	if len(obs.HookLogs) == 0 {
-		for i, lg := range rc.Logs {
-			tr.Events[i].LogIndex = int64(lg.Index)
+	if len(obs.HookLogs) > 0 {
+		// A reverted child can emit identical log data. Only assign receipt
+		// indices to the exact events the EVM kept before the hook failed.
+		next := 0
+		for i := range tr.ErrorEvents {
+			event := &tr.ErrorEvents[i]
+			if event.ID != obs.HookLogs[next].ID {
+				continue
+			}
+			if eventSig(event) != logSig(rc.Logs[next]) {
+				return fmt.Errorf("hook error event %s differs from receipt", event.ID)
+			}
+			event.LogIndex = int64(rc.Logs[next].Index)
+			next++
+			if next == len(obs.HookLogs) {
+				return nil
+			}
 		}
+		return fmt.Errorf("missing hook error event %s", obs.HookLogs[next].ID)
+	}
+	for i, lg := range rc.Logs {
+		tr.Events[i].LogIndex = int64(lg.Index)
 	}
 	return nil
 }

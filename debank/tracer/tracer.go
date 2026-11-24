@@ -117,14 +117,18 @@ func NewReplayTracer(hash common.Hash) (vm.EVMLogger, func(vmError string) (Resu
 	}
 	return t, func(vmError string) (Result, error) {
 		var res Result
-		if vmError != "" && len(t.callstack) == 1 && t.callstack[0].Error == "" {
-			res.HookLogs = committedLogs(&t.callstack[0])
+		hookReverted := vmError != "" && len(t.callstack) == 1 && t.callstack[0].Error == ""
+		if hookReverted {
 			t.callstack[0].Error = vmError
 			t.committed = true
 			t.storageChanges = map[common.Address]struct{}{}
 		}
 		trace, err := t.result()
 		res.Trace = trace
+		if hookReverted && err == nil {
+			// Finalization assigns a unique ID to each exported error event.
+			res.HookLogs = committedLogs(&t.callstack[0])
+		}
 		return res, err
 	}
 }
@@ -254,9 +258,6 @@ func (t *debankTracer) commitStorageChanges() {
 // committedLogs returns, in execution order, the logs of frames that did not
 // fail in the EVM.
 func committedLogs(cf *callFrame) []dtypes.Event {
-	if cf.failed() {
-		return nil
-	}
 	var out []dtypes.Event
 	li, ci := 0, 0
 	for li < len(cf.Logs) || ci < len(cf.Calls) {
@@ -264,7 +265,9 @@ func committedLogs(cf *callFrame) []dtypes.Event {
 			out = append(out, cf.Logs[li])
 			li++
 		} else {
-			out = append(out, committedLogs(&cf.Calls[ci])...)
+			if !cf.Calls[ci].failed() {
+				out = append(out, committedLogs(&cf.Calls[ci])...)
+			}
 			ci++
 		}
 	}

@@ -110,12 +110,15 @@ func TestCheckReceipt(t *testing.T) {
 	require.ErrorContains(t, err, "content differs")
 
 	// Post-processing revert: the receipt keeps the EVM log, the trace reports it as an error event.
-	ev.LogIndex = 0
-	tr = dtypes.TraceResult{ErrorTraces: []dtypes.Trace{root}, ErrorEvents: []dtypes.Event{ev}}
+	ev.ID = "kept"
+	reverted := ev
+	reverted.ID = "reverted-child"
+	tr = dtypes.TraceResult{ErrorTraces: []dtypes.Trace{root}, ErrorEvents: []dtypes.Event{reverted, ev}}
 	obs = replay.Transaction{Hash: hash, Trace: traceJSON(t, tr), HookLogs: []dtypes.Event{ev}}
 	got, err = receiptTrace(obs, &receipt{Status: false, Logs: []*ethtypes.Log{lg}})
 	require.NoError(t, err)
-	require.Equal(t, int64(0), got.ErrorEvents[0].LogIndex)
+	require.Zero(t, got.ErrorEvents[0].LogIndex)
+	require.Equal(t, int64(9), got.ErrorEvents[1].LogIndex)
 	_, err = receiptTrace(obs, &receipt{Status: false})
 	require.ErrorContains(t, err, "committed log count")
 }
