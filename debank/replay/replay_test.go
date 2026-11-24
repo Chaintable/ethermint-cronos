@@ -68,4 +68,15 @@ func TestVerify(t *testing.T) {
 	require.ErrorContains(t, Verify(want, got), "tx[0]: event[0]")
 	got = responses()
 	require.ErrorContains(t, Verify(want, got), "validator updates")
+
+	// The block gas failure decides whether a transaction is listed, though
+	// Log is not otherwise compared.
+	exceeded := "out of gas in location: block gas meter; gasWanted: 0, gasUsed: 9: out of gas"
+	want.DeliverTxs[0].Code, want.DeliverTxs[0].Codespace, want.DeliverTxs[0].Log = 11, "sdk", "out of gas"
+	got = responses()
+	got.EndBlock.ValidatorUpdates = want.EndBlock.ValidatorUpdates
+	got.DeliverTxs[0].Code, got.DeliverTxs[0].Codespace, got.DeliverTxs[0].Data, got.DeliverTxs[0].Log = 11, "sdk", want.DeliverTxs[0].Data, exceeded
+	require.ErrorContains(t, Verify(want, got), "tx[0] outcome")
+	want.DeliverTxs[0].Log = exceeded + " (archived)"
+	require.NoError(t, Verify(want, got))
 }

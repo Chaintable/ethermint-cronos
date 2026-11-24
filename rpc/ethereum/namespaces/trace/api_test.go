@@ -1,6 +1,7 @@
 package trace
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
@@ -12,11 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/crypto/ed25519"
+	"github.com/tendermint/tendermint/libs/log"
 	tmstate "github.com/tendermint/tendermint/proto/tendermint/state"
 	tmtypes "github.com/tendermint/tendermint/types"
 
 	"github.com/tharsis/ethermint/debank/replay"
 	dtypes "github.com/tharsis/ethermint/debank/types"
+	rpctypes "github.com/tharsis/ethermint/rpc/ethereum/types"
 	evmtypes "github.com/tharsis/ethermint/x/evm/types"
 )
 
@@ -136,6 +139,63 @@ func TestCanonicalObservations(t *testing.T) {
 	replayed.Transactions = replayed.Transactions[:2]
 	_, err = canonicalObservations(msgs, results, replayed, receipts)
 	require.ErrorContains(t, err, "observations for 2 EVM messages")
+}
+
+// An EVM message executed inside another message, such as authz MsgExec, is
+// observed but not listed by the RPC.
+func TestCanonicalObservationsSkipsNestedMessages(t *testing.T) {
+	a := ethTx(0)
+	hash := a.AsTransaction().Hash()
+	results := &tmstate.ABCIResponses{DeliverTxs: []*abci.ResponseDeliverTx{
+		{Data: msgResult(t, &evmtypes.MsgEthereumTxResponse{Hash: hash.Hex(), GasUsed: 21000}), GasUsed: 21000},
+		{}, // MsgExec wrapping an EVM message
+	}}
+	msgs := []ethMsg{{cosmos: 0, tx: a}}
+	receipts, err := receiptsFromResults(msgs, results)
+	require.NoError(t, err)
+	root := dtypes.Trace{TxID: hash.Hex(), TraceAddress: []int64{}}
+	replayed := &replay.Result{Transactions: []replay.Transaction{
+		{CosmosIndex: 0, Hash: hash, GasUsed: 21000, Trace: traceJSON(t, dtypes.TraceResult{Traces: []dtypes.Trace{root}})},
+		{CosmosIndex: 1, Hash: ethTx(1).AsTransaction().Hash(), GasUsed: 21000, Trace: []byte("{}")},
+	}}
+	selected, err := canonicalObservations(msgs, results, replayed, receipts)
+	require.NoError(t, err)
+	require.Len(t, selected, 1)
+	require.Equal(t, hash, selected[0].Hash)
+}
+
+type resultsChain struct {
+	fakeChain
+	block   *tmtypes.Block
+	results *tmstate.ABCIResponses
+}
+
+func (c *resultsChain) Block(int64) (*tmtypes.Block, error)           { return c.block, nil }
+func (c *resultsChain) Results(int64) (*tmstate.ABCIResponses, error) { return c.results, nil }
+
+type checkOnlyExecutor struct{ replay.Executor }
+
+func (checkOnlyExecutor) CheckReplayHeight(string, int64) error { return nil }
+func (checkOnlyExecutor) BlockFileOnly() (bool, error)          { return true, nil }
+
+// A block without EVM messages is not replayed, so its archived results must
+// match the next header.
+func TestUnreplayedBlockChecksLastResultsHash(t *testing.T) {
+	parent := tmtypes.BlockID{Hash: make([]byte, 32), PartSetHeader: tmtypes.PartSetHeader{Total: 1, Hash: make([]byte, 32)}}
+	commit := &tmtypes.Commit{Height: 9, BlockID: parent, Signatures: []tmtypes.CommitSig{tmtypes.NewCommitSigAbsent()}}
+	block := tmtypes.MakeBlock(10, []tmtypes.Tx{{1}}, commit, nil)
+	block.ChainID, block.LastBlockID, block.ProposerAddress = "cronosmainnet_25-1", parent, make([]byte, 20)
+	results := &tmstate.ABCIResponses{
+		DeliverTxs: []*abci.ResponseDeliverTx{{Code: 5}},
+		BeginBlock: &abci.ResponseBeginBlock{}, EndBlock: &abci.ResponseEndBlock{},
+	}
+	next := &tmtypes.Header{Height: 11, LastBlockID: tmtypes.BlockID{Hash: block.Hash()}, LastResultsHash: make([]byte, 32)}
+	chain := &resultsChain{fakeChain: fakeChain{headers: map[int64]*tmtypes.Header{11: next}}, block: block, results: results}
+	// The only transaction failed, so it is never decoded.
+	api := NewAPI(log.NewNopLogger(), chain, nil, big.NewInt(25), checkOnlyExecutor{})
+	height := rpctypes.BlockNumber(10)
+	_, err := api.DebankBlockRaw(context.Background(), rpctypes.BlockNumberOrHash{BlockNumber: &height})
+	require.ErrorContains(t, err, "next header LastResultsHash")
 }
 
 type fakeChain struct {

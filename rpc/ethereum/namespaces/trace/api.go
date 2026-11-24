@@ -171,6 +171,10 @@ func (api *API) DebankBlockRaw(ctx context.Context, id rpctypes.BlockNumberOrHas
 	if !bytes.Equal(next.LastBlockID.Hash, hash) {
 		return nil, fmt.Errorf("next header parent hash mismatch")
 	}
+	// Results of a block that is not replayed are attested by the next header only.
+	if !bytes.Equal(next.LastResultsHash, sm.ABCIResponsesResultsHash(results)) {
+		return nil, fmt.Errorf("archived results differ from the next header LastResultsHash")
+	}
 	replayNeeded := len(msgs) > 0
 	timing.mark("next_header")
 	// Only a replay needs the parent validators.

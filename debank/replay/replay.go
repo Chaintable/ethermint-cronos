@@ -134,7 +134,8 @@ func ExceedsBlockGas(r *abci.ResponseDeliverTx) bool {
 const BlockGasExceeded = "exceeds block gas limit"
 
 // Verify compares deterministic ABCI fields in execution order. Event
-// attribute Index is a node indexing preference and Log/Info are diagnostic.
+// attribute Index is a node indexing preference and Log/Info are diagnostic,
+// except the block gas failure, which decides whether a transaction is listed.
 func Verify(want, got *tmstate.ABCIResponses) error {
 	if want == nil || got == nil || want.BeginBlock == nil || want.EndBlock == nil || got.BeginBlock == nil || got.EndBlock == nil {
 		return fmt.Errorf("missing block results")
@@ -151,7 +152,7 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 			return fmt.Errorf("tx[%d]: missing result", i)
 		}
 		switch {
-		case w.Code != g.Code || w.Codespace != g.Codespace:
+		case w.Code != g.Code || w.Codespace != g.Codespace || ExceedsBlockGas(w) != ExceedsBlockGas(g):
 			return fmt.Errorf("tx[%d] outcome: got %s/%d, want %s/%d", i, g.Codespace, g.Code, w.Codespace, w.Code)
 		case w.GasWanted != g.GasWanted || w.GasUsed != g.GasUsed:
 			return fmt.Errorf("tx[%d] gas wanted/used: got %d/%d, want %d/%d", i, g.GasWanted, g.GasUsed, w.GasWanted, w.GasUsed)
