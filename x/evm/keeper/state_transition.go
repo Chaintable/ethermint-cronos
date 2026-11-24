@@ -165,13 +165,18 @@ func (k Keeper) GetHashFn(ctx sdk.Context) vm.GetHashFunc {
 // returning.
 //
 // For relevant discussion see: https://github.com/cosmos/cosmos-sdk/discussions/9072
-func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) (*types.EVMResult, error) {
+func (k *Keeper) ApplyTransaction(ctx sdk.Context, msgEth *types.MsgEthereumTx) (result *types.EVMResult, err error) {
 	ethTx := msgEth.AsTransaction()
 	cfg, err := k.EVMConfig(ctx, k.eip155ChainID, ethTx.Hash())
 	if err != nil {
 		return nil, errorsmod.Wrap(err, "failed to load evm config")
 	}
 
+	if k.transactionObserver != nil {
+		var finished func(*types.EVMResult, error)
+		cfg.Tracer, finished = k.transactionObserver(ctx, ethTx.Hash())
+		defer func() { finished(result, err) }()
+	}
 	msg := msgEth.AsMessage(cfg.BaseFee)
 	// snapshot to contain the tx processing and post processing in same scope
 	var commit func()
@@ -463,10 +468,7 @@ func (k *Keeper) ApplyMessageWithConfig(
 		if msg.SetCodeAuthorizations != nil {
 			for _, auth := range msg.SetCodeAuthorizations {
 				// Note errors are ignored, we simply skip invalid authorizations here.
-				// Pass the EVM chain ID from cfg (set on every tx/query path) rather
-				// than letting validateAuthorization read the BeginBlock-only keeper
-				// field k.eip155ChainID, which is nil on a frozen/query-only node.
-				k.applyAuthorization(&auth, stateDB, cfg.ChainConfig.ChainID) //nolint:errcheck
+				k.applyAuthorization(&auth, stateDB) //nolint:errcheck
 			}
 		}
 

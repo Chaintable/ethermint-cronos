@@ -23,6 +23,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/rpc"
 
+	"github.com/evmos/ethermint/debank/replay"
 	"github.com/evmos/ethermint/debank/statediff"
 	"github.com/evmos/ethermint/rpc/backend"
 	"github.com/evmos/ethermint/rpc/namespaces/ethereum/debug"
@@ -165,6 +166,7 @@ func GetRPCAPIs(ctx *server.Context,
 	indexer ethermint.EVMTxIndexer,
 	selectedAPIs []string,
 	stateSource statediff.StateChangeSource,
+	executor replay.Executor,
 ) []rpc.API {
 	var apis []rpc.API
 
@@ -174,7 +176,7 @@ func GetRPCAPIs(ctx *server.Context,
 			apis = append(apis, rpc.API{
 				Namespace: TraceNamespace,
 				Version:   apiVersion,
-				Service:   trace.NewAPI(ctx, ctx.Logger, evmBackend, clientCtx, stateSource),
+				Service:   trace.NewAPI(ctx, ctx.Logger, evmBackend, clientCtx, stateSource, executor),
 				Public:    true,
 			})
 			continue

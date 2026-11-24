@@ -1047,9 +1047,6 @@ type QueryTraceTxRequest struct {
 	ChainId int64 `protobuf:"varint,9,opt,name=chain_id,json=chainId,proto3" json:"chain_id,omitempty"`
 	// base_fee is the base fee based on the block_number of requested transaction
 	BaseFee *cosmossdk_io_math.Int `protobuf:"bytes,10,opt,name=base_fee,json=baseFee,proto3,customtype=cosmossdk.io/math.Int" json:"base_fee,omitempty"`
-	// block_max_gas is the block gas limit from consensus params (DeBank: needed
-	// so the GASLIMIT opcode is non-zero on the query/trace path).
-	BlockMaxGas int64 `protobuf:"varint,11,opt,name=block_max_gas,json=blockMaxGas,proto3" json:"block_max_gas,omitempty"`
 }
 
 func (m *QueryTraceTxRequest) Reset()         { *m = QueryTraceTxRequest{} }
@@ -1137,13 +1134,6 @@ func (m *QueryTraceTxRequest) GetProposerAddress() github_com_cosmos_cosmos_sdk_
 func (m *QueryTraceTxRequest) GetChainId() int64 {
 	if m != nil {
 		return m.ChainId
-	}
-	return 0
-}
-
-func (m *QueryTraceTxRequest) GetBlockMaxGas() int64 {
-	if m != nil {
-		return m.BlockMaxGas
 	}
 	return 0
 }
@@ -1365,9 +1355,6 @@ type QueryTraceBlockRequest struct {
 	ProposerAddress github_com_cosmos_cosmos_sdk_types.ConsAddress `protobuf:"bytes,8,opt,name=proposer_address,json=proposerAddress,proto3,casttype=github.com/cosmos/cosmos-sdk/types.ConsAddress" json:"proposer_address,omitempty"`
 	// chain_id is the eip155 chain id parsed from the requested block header
 	ChainId int64 `protobuf:"varint,9,opt,name=chain_id,json=chainId,proto3" json:"chain_id,omitempty"`
-	// block_max_gas is the block gas limit from consensus params (DeBank: needed
-	// so the GASLIMIT opcode is non-zero on the query/trace path).
-	BlockMaxGas int64 `protobuf:"varint,10,opt,name=block_max_gas,json=blockMaxGas,proto3" json:"block_max_gas,omitempty"`
 }
 
 func (m *QueryTraceBlockRequest) Reset()         { *m = QueryTraceBlockRequest{} }
@@ -1448,13 +1435,6 @@ func (m *QueryTraceBlockRequest) GetProposerAddress() github_com_cosmos_cosmos_s
 func (m *QueryTraceBlockRequest) GetChainId() int64 {
 	if m != nil {
 		return m.ChainId
-	}
-	return 0
-}
-
-func (m *QueryTraceBlockRequest) GetBlockMaxGas() int64 {
-	if m != nil {
-		return m.BlockMaxGas
 	}
 	return 0
 }
@@ -3267,11 +3247,6 @@ func (m *QueryTraceTxRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
-	if m.BlockMaxGas != 0 {
-		i = encodeVarintQuery(dAtA, i, uint64(m.BlockMaxGas))
-		i--
-		dAtA[i] = 0x58
-	}
 	if m.BaseFee != nil {
 		{
 			size := m.BaseFee.Size()
@@ -3516,11 +3491,6 @@ func (m *QueryTraceBlockRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) 
 	_ = i
 	var l int
 	_ = l
-	if m.BlockMaxGas != 0 {
-		i = encodeVarintQuery(dAtA, i, uint64(m.BlockMaxGas))
-		i--
-		dAtA[i] = 0x50
-	}
 	if m.ChainId != 0 {
 		i = encodeVarintQuery(dAtA, i, uint64(m.ChainId))
 		i--
@@ -4156,9 +4126,6 @@ func (m *QueryTraceTxRequest) Size() (n int) {
 		l = m.BaseFee.Size()
 		n += 1 + l + sovQuery(uint64(l))
 	}
-	if m.BlockMaxGas != 0 {
-		n += 1 + sovQuery(uint64(m.BlockMaxGas))
-	}
 	return n
 }
 
@@ -4255,9 +4222,6 @@ func (m *QueryTraceBlockRequest) Size() (n int) {
 	}
 	if m.ChainId != 0 {
 		n += 1 + sovQuery(uint64(m.ChainId))
-	}
-	if m.BlockMaxGas != 0 {
-		n += 1 + sovQuery(uint64(m.BlockMaxGas))
 	}
 	return n
 }
@@ -6743,25 +6707,6 @@ func (m *QueryTraceTxRequest) Unmarshal(dAtA []byte) error {
 				return err
 			}
 			iNdEx = postIndex
-		case 11:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field BlockMaxGas", wireType)
-			}
-			m.BlockMaxGas = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowQuery
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.BlockMaxGas |= int64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
 		default:
 			iNdEx = preIndex
 			skippy, err := skipQuery(dAtA[iNdEx:])
@@ -7459,25 +7404,6 @@ func (m *QueryTraceBlockRequest) Unmarshal(dAtA []byte) error {
 				b := dAtA[iNdEx]
 				iNdEx++
 				m.ChainId |= int64(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 10:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field BlockMaxGas", wireType)
-			}
-			m.BlockMaxGas = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowQuery
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.BlockMaxGas |= int64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
