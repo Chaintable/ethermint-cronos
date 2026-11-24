@@ -57,9 +57,15 @@ func receiptsFromResults(msgs []ethMsg, results *tmstate.ABCIResponses) ([]*rece
 		if res.Hash != m.tx.AsTransaction().Hash().Hex() {
 			return nil, fmt.Errorf("tx[%d]/msg[%d]: response hash %s", m.cosmos, m.msg, res.Hash)
 		}
+		// The RPC of this version reports the Cosmos transaction's gas for a
+		// single message and the message's own gas within a batch.
+		gasUsed := res.GasUsed
+		if len(data.Data) == 1 {
+			gasUsed = uint64(results.DeliverTxs[m.cosmos].GasUsed)
+		}
 		out = append(out, &receipt{
 			Status:       res.VmError == "",
-			GasUsed:      uint64(results.DeliverTxs[m.cosmos].GasUsed),
+			GasUsed:      gasUsed,
 			ExecutionGas: res.GasUsed,
 			Logs:         evmtypes.LogsToEthereum(res.Logs),
 		})
