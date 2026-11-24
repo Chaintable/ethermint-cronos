@@ -151,7 +151,11 @@ func canonicalObservations(msgs []ethMsg, results *tmstate.ABCIResponses, replay
 			return nil, fmt.Errorf("tx[%d]/msg[%d]: invalid observation for %s: %s", m.cosmos, m.msg, hash, obs.Error)
 		}
 		rc := receipts[i]
-		if obs.GasUsed != rc.ExecutionGas || obs.Failed == rc.Status {
+		// fix-unlucky-tx's re-execution of the row exceeding the block gas
+		// limit may report different gas than the execution.
+		rewritten := replayed.Responses != nil && m.cosmos < len(replayed.Responses.DeliverTxs) &&
+			replay.ExceedsBlockGas(replayed.Responses.DeliverTxs[m.cosmos])
+		if (!rewritten && obs.GasUsed != rc.ExecutionGas) || obs.Failed == rc.Status {
 			return nil, fmt.Errorf("tx[%d]/msg[%d]: receipt mismatch for %s", m.cosmos, m.msg, hash)
 		}
 	}

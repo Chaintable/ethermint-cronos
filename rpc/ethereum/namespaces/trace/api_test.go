@@ -120,6 +120,16 @@ func TestCanonicalObservations(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, got, 2)
 
+	// At mainnet H441639 the archived response of the row exceeding the block
+	// gas limit reports 800 gas less than the execution.
+	receipts[1].ExecutionGas = 20200
+	_, err = canonicalObservations(msgs, results, replayed, receipts)
+	require.ErrorContains(t, err, "receipt mismatch")
+	replayed.Responses = &tmstate.ABCIResponses{DeliverTxs: []*abci.ResponseDeliverTx{{}, {Code: 5},
+		{Code: 11, Log: "out of gas in location: block gas meter; gasWanted: 0, gasUsed: 21000: out of gas"}}}
+	_, err = canonicalObservations(msgs, results, replayed, receipts)
+	require.NoError(t, err)
+
 	replayed.Transactions[2].Failed = false
 	_, err = canonicalObservations(msgs, results, replayed, receipts)
 	require.ErrorContains(t, err, "receipt mismatch")
