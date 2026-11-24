@@ -161,4 +161,4 @@ replace github.com/99designs/keyring => github.com/cosmos/keyring v1.1.7-0.20210
 
 replace github.com/cosmos/iavl => github.com/cosmos/iavl v0.17.1
 
-replace github.com/ethereum/go-ethereum => github.com/Chaintable/go-ethereum v0.0.0-20261123171153-e6d694620c54
+replace github.com/ethereum/go-ethereum => github.com/Chaintable/go-ethereum v0.0.0-20261124034159-f2b887f14495

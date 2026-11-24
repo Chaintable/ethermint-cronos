@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/core/vm/runtime"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/stretchr/testify/require"
 	dtypes "github.com/tharsis/ethermint/debank/types"
 )
@@ -91,4 +92,30 @@ func TestReplayTracerPostProcessingRevert(t *testing.T) {
 	require.Len(t, res.HookLogs, 2)
 	require.Equal(t, strings.ToLower(common.BytesToAddress([]byte("contract")).Hex()), res.HookLogs[0].Address)
 	require.Equal(t, strings.ToLower(contractC.Hex()), res.HookLogs[1].Address)
+}
+
+// A top-level CREATE whose address is taken fails before running any code;
+// the trace still has its failed root frame.
+func TestReplayTracerRootCreateCollision(t *testing.T) {
+	db, err := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+	require.NoError(t, err)
+	origin := common.HexToAddress("0x0a")
+	db.SetNonce(crypto.CreateAddress(origin, 0), 1)
+	tracer, finish := NewReplayTracer(common.HexToHash("0x02"))
+	_, _, leftOver, err := runtime.Create(common.Hex2Bytes("00"), &runtime.Config{Origin: origin, State: db, GasLimit: 100000, EVMConfig: vm.Config{Debug: true, Tracer: tracer}})
+	require.ErrorIs(t, err, vm.ErrContractAddressCollision)
+	res, err := finish(err.Error())
+	require.NoError(t, err)
+	require.Empty(t, res.HookLogs)
+	var tr dtypes.TraceResult
+	require.NoError(t, json.Unmarshal(res.Trace, &tr))
+	require.Empty(t, tr.Traces)
+	require.Len(t, tr.ErrorTraces, 1)
+	root := tr.ErrorTraces[0]
+	require.Empty(t, root.TraceAddress)
+	require.Equal(t, "create", root.CallCreateType)
+	require.Equal(t, vm.ErrContractAddressCollision.Error(), root.Error)
+	require.Equal(t, strings.ToLower(common.Address{}.Hex()), root.To)
+	require.Equal(t, int64(100000), root.Gas.Int64())
+	require.Equal(t, int64(100000-leftOver), root.GasUsed.Int64())
 }
