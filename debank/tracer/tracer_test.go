@@ -2,6 +2,7 @@ package tracer
 
 import (
 	"encoding/json"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -147,4 +148,22 @@ func TestReplayTracerStaticFrameWrites(t *testing.T) {
 		require.Contains(t, f.Error, vm.ErrWriteProtection.Error())
 		require.False(t, f.SelfStorageChange)
 	}
+}
+
+// A top-level CALL whose value exceeds the sender's balance still yields one
+// failed root frame (a later message of a batch can hit this after ante).
+func TestReplayTracerRootInsufficientBalance(t *testing.T) {
+	db, err := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+	require.NoError(t, err)
+	tracer, finish := NewReplayTracer(common.HexToHash("0x03"))
+	_, _, err = runtime.Call(contractB, nil, &runtime.Config{State: db, GasLimit: 21000, Value: big.NewInt(7), EVMConfig: vm.Config{Debug: true, Tracer: tracer}})
+	require.ErrorIs(t, err, vm.ErrInsufficientBalance)
+	res, err := finish(vm.ErrInsufficientBalance.Error())
+	require.NoError(t, err)
+	var tr dtypes.TraceResult
+	require.NoError(t, json.Unmarshal(res.Trace, &tr))
+	require.Empty(t, tr.Traces)
+	require.Len(t, tr.ErrorTraces, 1)
+	require.Equal(t, vm.ErrInsufficientBalance.Error(), tr.ErrorTraces[0].Error)
+	require.Zero(t, tr.ErrorTraces[0].GasUsed.Sign())
 }
