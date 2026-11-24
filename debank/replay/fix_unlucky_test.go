@@ -68,9 +68,15 @@ func TestFixUnluckyTxArchive(t *testing.T) {
 	require.True(t, ExceedsBlockGas(native.DeliverTxs[3]))
 	require.NoError(t, Verify(archived, native))
 
+	// At mainnet H441639 the re-execution used 800 gas less than consensus.
 	other := executed(archived, 3)
-	other.DeliverTxs[3].GasUsed++
-	require.ErrorContains(t, Verify(archived, other), "tx[3]")
+	other.DeliverTxs[3].GasUsed += 800
+	require.NoError(t, Verify(archived, other))
+
+	// Only one transaction can exceed the block gas limit.
+	other = executed(archived, 3)
+	other.DeliverTxs[5] = other.DeliverTxs[3]
+	require.ErrorContains(t, Verify(archived, other), "tx[5]: second transaction")
 
 	// Only the block-gas failure after commit is excused.
 	other = executed(archived, 3)
@@ -89,8 +95,4 @@ func TestFixUnluckyTxArchiveFailedRewrite(t *testing.T) {
 	*row = abci.ResponseDeliverTx{Code: 32, Codespace: "sdk", GasWanted: row.GasWanted, GasUsed: row.GasUsed,
 		Log: "account sequence mismatch, expected 27229, got 27244: incorrect account sequence"}
 	require.NoError(t, Verify(archived, executed(archived, 3)))
-
-	other := executed(archived, 3)
-	other.DeliverTxs[3].GasUsed++
-	require.ErrorContains(t, Verify(archived, other), "tx[3]")
 }

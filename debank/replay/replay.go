@@ -129,18 +129,11 @@ func ExceedsBlockGas(r *abci.ResponseDeliverTx) bool {
 	return r.Code == 11 && strings.Contains(r.Log, "out of gas in location: block gas meter; gasWanted:")
 }
 
-// rewrittenByFix reports an archived row that cronosd fix-unlucky-tx replaced
-// with a re-execution of a transaction that exceeded the block gas limit; the
-// re-execution may itself fail, e.g. with code 32 after an ante failure.
-func rewrittenByFix(archived, executed *abci.ResponseDeliverTx) bool {
-	return ExceedsBlockGas(executed) &&
-		archived.GasWanted == executed.GasWanted && archived.GasUsed == executed.GasUsed
-}
-
 // Verify compares deterministic ABCI fields in execution order. Event
 // attribute Index is a node indexing preference and Log/Info are diagnostic.
-// A row rewritten by fix-unlucky-tx is not compared here; the caller checks
-// its data against the observed execution.
+// The one transaction that exceeded the block gas limit is not compared:
+// cronosd fix-unlucky-tx may have replaced its row with a re-execution whose
+// code and gas differ; the caller checks its data against the execution.
 func Verify(want, got *tmstate.ABCIResponses) error {
 	if want == nil || got == nil || want.BeginBlock == nil || want.EndBlock == nil || got.BeginBlock == nil || got.EndBlock == nil {
 		return fmt.Errorf("missing block results")
@@ -151,12 +144,17 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 	if len(want.DeliverTxs) != len(got.DeliverTxs) {
 		return fmt.Errorf("tx count: got %d, want %d", len(got.DeliverTxs), len(want.DeliverTxs))
 	}
+	exceeded := false
 	for i, w := range want.DeliverTxs {
 		g := got.DeliverTxs[i]
 		if w == nil || g == nil {
 			return fmt.Errorf("tx[%d]: missing result", i)
 		}
-		if rewrittenByFix(w, g) {
+		if ExceedsBlockGas(g) {
+			if exceeded {
+				return fmt.Errorf("tx[%d]: second transaction exceeding the block gas limit", i)
+			}
+			exceeded = true
 			continue
 		}
 		switch {
