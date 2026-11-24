@@ -119,3 +119,32 @@ func TestReplayTracerRootCreateCollision(t *testing.T) {
 	require.Equal(t, int64(100000), root.Gas.Int64())
 	require.Equal(t, int64(100000-leftOver), root.GasUsed.Int64())
 }
+
+// LOG and SSTORE in a static frame fail the opcode's write protection after
+// CaptureState; they must not appear as events or storage changes.
+func TestReplayTracerStaticFrameWrites(t *testing.T) {
+	db, err := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+	require.NoError(t, err)
+	logger := common.HexToAddress("0xdd")
+	writer := common.HexToAddress("0xee")
+	db.SetCode(logger, common.Hex2Bytes("60aa60006000a100")) // LOG1(0xaa)
+	db.SetCode(writer, common.Hex2Bytes("600160005500"))     // SSTORE(0,1)
+	// STATICCALL 0xdd, STATICCALL 0xee, STOP.
+	code := common.Hex2Bytes("600060006000600060dd61fffffa50" + "600060006000600060ee61fffffa50" + "00")
+	tracer, finish := NewReplayTracer(common.HexToHash("0x02"))
+	_, _, err = runtime.Execute(code, nil, &runtime.Config{State: db, GasLimit: 1000000, EVMConfig: vm.Config{Debug: true, Tracer: tracer}})
+	require.NoError(t, err)
+	res, err := finish("")
+	require.NoError(t, err)
+	var tr dtypes.TraceResult
+	require.NoError(t, json.Unmarshal(res.Trace, &tr))
+	require.Empty(t, tr.Events)
+	require.Empty(t, tr.ErrorEvents)
+	require.Empty(t, tr.StorageContracts)
+	require.Len(t, tr.ErrorTraces, 2)
+	for _, f := range tr.ErrorTraces {
+		require.Equal(t, "staticcall", f.CallType)
+		require.Contains(t, f.Error, vm.ErrWriteProtection.Error())
+		require.False(t, f.SelfStorageChange)
+	}
+}

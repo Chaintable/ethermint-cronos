@@ -32,8 +32,10 @@ type callFrame struct {
 	Calls        []callFrame
 	Logs         []dtypes.Event
 
-	PosInParentTrace  int
-	ParentTraceID     string
+	PosInParentTrace int
+	ParentTraceID    string
+	// static frames and their children cannot write state or emit logs.
+	static            bool
 	TraceID           string
 	StorageChange     bool
 	SelfStorageChange bool
@@ -69,8 +71,9 @@ func (f *callFrame) processOutput(output []byte, err error) {
 
 // debankTracer collects the DeBank call tree, logs and storage-changing
 // contracts of one signed EVM message. The pinned VM has no log or storage
-// hooks; LOG and SSTORE are read in CaptureState, which the interpreter only
-// calls for an opcode that is about to execute.
+// hooks; LOG and SSTORE are read in CaptureState, which the interpreter calls
+// before the opcode's own write protection check, so they are skipped in a
+// static frame where they fail.
 type debankTracer struct {
 	hash      common.Hash
 	callstack []callFrame
@@ -147,18 +150,23 @@ func (t *debankTracer) CaptureEnd(output []byte, gasUsed uint64, _ time.Duration
 
 func (t *debankTracer) CaptureEnter(typ vm.OpCode, from common.Address, to common.Address, input []byte, gas uint64, value *big.Int) {
 	t.entered++
+	static := typ == vm.STATICCALL
+	if n := len(t.callstack); n > 0 && t.callstack[n-1].static {
+		static = true
+	}
 	toCopy := to
 	var v *big.Int
 	if value != nil {
 		v = new(big.Int).Set(value)
 	}
 	t.callstack = append(t.callstack, callFrame{
-		Type:  typ,
-		From:  from,
-		To:    &toCopy,
-		Input: common.CopyBytes(input),
-		Gas:   gas,
-		Value: v,
+		Type:   typ,
+		From:   from,
+		To:     &toCopy,
+		Input:  common.CopyBytes(input),
+		Gas:    gas,
+		Value:  v,
+		static: static,
 	})
 }
 
@@ -180,7 +188,7 @@ func (t *debankTracer) CaptureExit(output []byte, gasUsed uint64, err error) {
 }
 
 func (t *debankTracer) CaptureState(_ uint64, op vm.OpCode, _, _ uint64, scope *vm.ScopeContext, _ []byte, _ int, err error) {
-	if err != nil || len(t.callstack) == 0 {
+	if err != nil || len(t.callstack) == 0 || t.callstack[len(t.callstack)-1].static {
 		return
 	}
 	switch {
