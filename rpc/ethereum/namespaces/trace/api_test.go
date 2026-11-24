@@ -69,6 +69,16 @@ func TestReceiptsFromResults(t *testing.T) {
 
 	_, err = receiptsFromResults([]ethMsg{{cosmos: 2, tx: a}}, results)
 	require.ErrorContains(t, err, "response hash")
+
+	// Within a batch each message reports its own gas.
+	batch := &tmstate.ABCIResponses{DeliverTxs: []*abci.ResponseDeliverTx{{Data: msgResult(t,
+		&evmtypes.MsgEthereumTxResponse{Hash: a.AsTransaction().Hash().Hex(), GasUsed: 30000},
+		&evmtypes.MsgEthereumTxResponse{Hash: b.AsTransaction().Hash().Hex(), GasUsed: 21000},
+	), GasUsed: 51000}}}
+	got, err = receiptsFromResults([]ethMsg{{cosmos: 0, msg: 0, tx: a}, {cosmos: 0, msg: 1, tx: b}}, batch)
+	require.NoError(t, err)
+	require.Equal(t, uint64(30000), got[0].GasUsed)
+	require.Equal(t, uint64(21000), got[1].GasUsed)
 }
 
 func traceJSON(t *testing.T, tr dtypes.TraceResult) json.RawMessage {
