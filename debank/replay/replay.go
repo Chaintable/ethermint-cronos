@@ -12,12 +12,14 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gogo/protobuf/proto"
 	abci "github.com/tendermint/tendermint/abci/types"
 	tmstate "github.com/tendermint/tendermint/proto/tendermint/state"
 
 	dtypes "github.com/tharsis/ethermint/debank/types"
+	evmtypes "github.com/tharsis/ethermint/x/evm/types"
 )
 
 // Request replays block BeginBlock.Header.Height on the state committed by
@@ -137,10 +139,15 @@ const BlockGasExceeded = "exceeds block gas limit"
 // attribute Index is a node indexing preference and Log/Info are diagnostic,
 // except the block gas failure, which decides whether a transaction is listed.
 func Verify(want, got *tmstate.ABCIResponses) error {
+	return VerifyBlock(want, got, nil, nil)
+}
+
+// VerifyBlock also checks historical ante hash differences against the original transaction.
+func VerifyBlock(want, got *tmstate.ABCIResponses, txs [][]byte, decode sdk.TxDecoder) error {
 	if want == nil || got == nil || want.BeginBlock == nil || want.EndBlock == nil || got.BeginBlock == nil || got.EndBlock == nil {
 		return fmt.Errorf("missing block results")
 	}
-	if err := compareEvents(want.BeginBlock.Events, got.BeginBlock.Events); err != nil {
+	if err := compareEvents(want.BeginBlock.Events, got.BeginBlock.Events, nil); err != nil {
 		return fmt.Errorf("begin block: %w", err)
 	}
 	if len(want.DeliverTxs) != len(got.DeliverTxs) {
@@ -159,11 +166,17 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 		case !bytes.Equal(w.Data, g.Data):
 			return fmt.Errorf("tx[%d] result data mismatch", i)
 		}
-		if err := compareEvents(w.Events, g.Events); err != nil {
+		if err := compareEvents(w.Events, g.Events, func(event int) bool {
+			if decode == nil || i >= len(txs) {
+				return false
+			}
+			tx, err := decode(txs[i])
+			return err == nil && historicalAnteHash(tx, g.Events, event, w.Events[event].Attributes[0].Value)
+		}); err != nil {
 			return fmt.Errorf("tx[%d]: %w", i, err)
 		}
 	}
-	if err := compareEvents(want.EndBlock.Events, got.EndBlock.Events); err != nil {
+	if err := compareEvents(want.EndBlock.Events, got.EndBlock.Events, nil); err != nil {
 		return fmt.Errorf("end block: %w", err)
 	}
 	if len(want.EndBlock.ValidatorUpdates) != len(got.EndBlock.ValidatorUpdates) {
@@ -180,7 +193,7 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 	return nil
 }
 
-func compareEvents(want, got []abci.Event) error {
+func compareEvents(want, got []abci.Event, allowAnteHash func(int) bool) error {
 	if len(want) != len(got) {
 		return fmt.Errorf("event count: got %d, want %d", len(got), len(want))
 	}
@@ -191,10 +204,41 @@ func compareEvents(want, got []abci.Event) error {
 		}
 		for j, a := range w.Attributes {
 			b := g.Attributes[j]
-			if !bytes.Equal(a.Key, b.Key) || !bytes.Equal(a.Value, b.Value) {
-				return fmt.Errorf("event[%d] (%s) mismatch", i, w.Type)
+			if bytes.Equal(a.Key, b.Key) && bytes.Equal(a.Value, b.Value) {
+				continue
 			}
+			if j == 0 && w.Type == evmtypes.EventTypeEthereumTx && len(w.Attributes) == 2 &&
+				string(a.Key) == evmtypes.AttributeKeyEthereumTxHash && bytes.Equal(a.Key, b.Key) &&
+				string(g.Attributes[1].Key) == evmtypes.AttributeKeyTxIndex && allowAnteHash != nil && allowAnteHash(i) {
+				continue
+			}
+			return fmt.Errorf("event[%d] (%s) mismatch", i, w.Type)
 		}
 	}
 	return nil
+}
+
+// The ante decorator emits one contiguous ethereum_tx event per top-level
+// Ethereum message, before the message handlers emit their execution events.
+func historicalAnteHash(tx sdk.Tx, events []abci.Event, index int, archived []byte) bool {
+	first := 0
+	for first < index && events[first].Type != evmtypes.EventTypeEthereumTx {
+		first++
+	}
+	msgs := tx.GetMsgs()
+	offset := index - first
+	if offset >= len(msgs) || first+len(msgs) > len(events) {
+		return false
+	}
+	for j, msg := range msgs {
+		e := events[first+j]
+		if _, ok := msg.(*evmtypes.MsgEthereumTx); !ok || e.Type != evmtypes.EventTypeEthereumTx ||
+			len(e.Attributes) != 2 || string(e.Attributes[0].Key) != evmtypes.AttributeKeyEthereumTxHash ||
+			string(e.Attributes[1].Key) != evmtypes.AttributeKeyTxIndex {
+			return false
+		}
+	}
+	msg := msgs[offset].(*evmtypes.MsgEthereumTx)
+	signed := msg.AsTransaction()
+	return signed != nil && msg.Hash == string(archived) && signed.Hash().Hex() == string(events[index].Attributes[0].Value)
 }
