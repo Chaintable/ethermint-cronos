@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -195,12 +196,23 @@ func compareEvents(want, got []abci.Event) error {
 		if w.Type != g.Type || len(w.Attributes) != len(g.Attributes) {
 			return fmt.Errorf("event[%d] (%s) mismatch", i, w.Type)
 		}
-		for j, a := range w.Attributes {
-			b := g.Attributes[j]
+		wa, ga := w.Attributes, g.Attributes
+		// SDK v0.44 TypedEventToEvent emits attributes in map iteration order.
+		if proto.MessageType(w.Type) != nil {
+			wa, ga = sortedAttributes(wa), sortedAttributes(ga)
+		}
+		for j, a := range wa {
+			b := ga[j]
 			if !bytes.Equal(a.Key, b.Key) || !bytes.Equal(a.Value, b.Value) {
 				return fmt.Errorf("event[%d] (%s) mismatch", i, w.Type)
 			}
 		}
 	}
 	return nil
+}
+
+func sortedAttributes(attrs []abci.EventAttribute) []abci.EventAttribute {
+	sorted := append([]abci.EventAttribute(nil), attrs...)
+	sort.SliceStable(sorted, func(i, j int) bool { return bytes.Compare(sorted[i].Key, sorted[j].Key) < 0 })
+	return sorted
 }

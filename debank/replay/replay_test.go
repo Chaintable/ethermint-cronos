@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	_ "github.com/cosmos/cosmos-sdk/x/authz"
 	"github.com/stretchr/testify/require"
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/crypto/ed25519"
@@ -68,4 +69,26 @@ func TestVerify(t *testing.T) {
 	require.ErrorContains(t, Verify(want, got), "tx[0]: event[0]")
 	got = responses()
 	require.ErrorContains(t, Verify(want, got), "validator updates")
+}
+
+func TestVerifyTypedEventAttributeOrder(t *testing.T) {
+	attr := func(k, v string) abci.EventAttribute { return abci.EventAttribute{Key: []byte(k), Value: []byte(v)} }
+	event := func(typ string, attrs ...abci.EventAttribute) []abci.Event {
+		return []abci.Event{{Type: typ, Attributes: attrs}}
+	}
+	a, b, c := attr("granter", `"x"`), attr("grantee", `"y"`), attr("msg_type_url", `"z"`)
+	grant := "cosmos.authz.v1beta1.EventGrant"
+
+	want, got := responses(), responses()
+	got.EndBlock.ValidatorUpdates = want.EndBlock.ValidatorUpdates
+	want.DeliverTxs[0].Events = event(grant, a, b, c)
+	got.DeliverTxs[0].Events = event(grant, c, a, b)
+	require.NoError(t, Verify(want, got), "typed event attribute order is not compared")
+
+	got.DeliverTxs[0].Events = event(grant, c, a, attr("grantee", `"w"`))
+	require.ErrorContains(t, Verify(want, got), "tx[0]: event[0]")
+
+	want.DeliverTxs[0].Events = event("message", a, b)
+	got.DeliverTxs[0].Events = event("message", b, a)
+	require.ErrorContains(t, Verify(want, got), "tx[0]: event[0]", "legacy event attribute order is compared")
 }
