@@ -12,6 +12,8 @@ import (
 	"strings"
 
 	"github.com/bytedance/sonic"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	authante "github.com/cosmos/cosmos-sdk/x/auth/ante"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gogo/protobuf/proto"
 	abci "github.com/tendermint/tendermint/abci/types"
@@ -137,6 +139,12 @@ const BlockGasExceeded = "exceeds block gas limit"
 // attribute Index is a node indexing preference and Log/Info are diagnostic,
 // except the block gas failure, which decides whether a transaction is listed.
 func Verify(want, got *tmstate.ABCIResponses) error {
+	return VerifyWithTxs(want, got, nil, nil)
+}
+
+// VerifyWithTxs additionally recognizes the legacy SDK fee event using the
+// original Cosmos transaction. All other events use the strict comparison.
+func VerifyWithTxs(want, got *tmstate.ABCIResponses, txs [][]byte, decode sdk.TxDecoder) error {
 	if want == nil || got == nil || want.BeginBlock == nil || want.EndBlock == nil || got.BeginBlock == nil || got.EndBlock == nil {
 		return fmt.Errorf("missing block results")
 	}
@@ -159,7 +167,11 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 		case !bytes.Equal(w.Data, g.Data):
 			return fmt.Errorf("tx[%d] result data mismatch", i)
 		}
-		if err := compareEvents(w.Events, g.Events); err != nil {
+		events := g.Events
+		if decode != nil && i < len(txs) {
+			events = legacyFeeEvents(w.Events, events, txs[i], decode)
+		}
+		if err := compareEvents(w.Events, events); err != nil {
 			return fmt.Errorf("tx[%d]: %w", i, err)
 		}
 	}
@@ -178,6 +190,48 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 		return fmt.Errorf("consensus parameter updates mismatch")
 	}
 	return nil
+}
+
+// DeductFeeDecorator emits the first tx event, before signature and message
+// execution events. SDK v0.45.7 added fee_payer to the previous fee-only event.
+func legacyFeeEvents(want, got []abci.Event, raw []byte, decode sdk.TxDecoder) []abci.Event {
+	if len(want) != len(got) {
+		return got
+	}
+	for i, ev := range got {
+		if ev.Type != sdk.EventTypeTx {
+			continue
+		}
+		w := want[i]
+		if w.Type != sdk.EventTypeTx || len(w.Attributes) != 1 || len(ev.Attributes) != 2 ||
+			string(w.Attributes[0].Key) != sdk.AttributeKeyFee || string(ev.Attributes[0].Key) != sdk.AttributeKeyFee ||
+			string(ev.Attributes[1].Key) != sdk.AttributeKeyFeePayer {
+			break
+		}
+		tx, err := decode(raw)
+		if err != nil {
+			break
+		}
+		// Transactions with extension options do not use the SDK fee decorator.
+		if ext, ok := tx.(authante.HasExtensionOptionsTx); ok && len(ext.GetExtensionOptions()) != 0 {
+			break
+		}
+		feeTx, ok := tx.(sdk.FeeTx)
+		if !ok || feeTx.GetFee().String() != string(ev.Attributes[0].Value) {
+			break
+		}
+		payer := feeTx.FeeGranter()
+		if payer == nil {
+			payer = feeTx.FeePayer()
+		}
+		if len(payer) == 0 || payer.String() != string(ev.Attributes[1].Value) {
+			break
+		}
+		normalized := append([]abci.Event(nil), got...)
+		normalized[i].Attributes = ev.Attributes[:1]
+		return normalized
+	}
+	return got
 }
 
 func compareEvents(want, got []abci.Event) error {

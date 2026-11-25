@@ -296,7 +296,7 @@ func (api *API) replayIfNeeded(ctx context.Context, req replay.Request, results 
 	if result == nil || result.Responses == nil {
 		return nil, fmt.Errorf("missing replay result")
 	}
-	if err = replay.Verify(results, result.Responses); err != nil {
+	if err = replay.VerifyWithTxs(results, result.Responses, req.Txs, api.txDecoder); err != nil {
 		return nil, err
 	}
 	return result, nil

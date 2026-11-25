@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/stretchr/testify/require"
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/crypto/ed25519"
@@ -79,4 +80,55 @@ func TestVerify(t *testing.T) {
 	require.ErrorContains(t, Verify(want, got), "tx[0] outcome")
 	want.DeliverTxs[0].Log = exceeded + " (archived)"
 	require.NoError(t, Verify(want, got))
+}
+
+type signedFee struct {
+	sdk.FeeTx
+	payer, granter sdk.AccAddress
+}
+
+func (t signedFee) GetFee() sdk.Coins          { return sdk.NewCoins(sdk.NewInt64Coin("basecro", 123)) }
+func (t signedFee) FeePayer() sdk.AccAddress   { return t.payer }
+func (t signedFee) FeeGranter() sdk.AccAddress { return t.granter }
+
+func TestHistoricalFeeEvent(t *testing.T) {
+	payer, granter := sdk.AccAddress(bytes.Repeat([]byte{1}, 20)), sdk.AccAddress(bytes.Repeat([]byte{2}, 20))
+	event := func(kv ...string) abci.Event {
+		ev := abci.Event{Type: "tx"}
+		for i := 0; i < len(kv); i += 2 {
+			ev.Attributes = append(ev.Attributes, abci.EventAttribute{Key: []byte(kv[i]), Value: []byte(kv[i+1])})
+		}
+		return ev
+	}
+	legacy := event("fee", "123basecro")
+	full := event("fee", "123basecro", "fee_payer", granter.String())
+	for _, tc := range []struct {
+		name      string
+		want, got abci.Event
+		grant     sdk.AccAddress
+		valid     bool
+	}{
+		{"fee grant", legacy, full, granter, true},
+		{"ordinary payer", legacy, event("fee", "123basecro", "fee_payer", payer.String()), nil, true},
+		{"wrong payer", legacy, full, nil, false},
+		{"wrong amount", event("fee", "124basecro"), full, granter, false},
+		{"wrong signed fee", event("fee", "124basecro"), event("fee", "124basecro", "fee_payer", granter.String()), granter, false},
+		{"unknown extra", legacy, event("fee", "123basecro", "fee_payer", granter.String(), "unknown", "x"), granter, false},
+		{"modern disagreement", event("fee", "123basecro", "fee_payer", payer.String()), full, granter, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := responses(), responses()
+			b.EndBlock = a.EndBlock
+			a.DeliverTxs[0].Events = []abci.Event{tc.want}
+			b.DeliverTxs[0].Events = []abci.Event{tc.got}
+			decode := func([]byte) (sdk.Tx, error) { return signedFee{payer: payer, granter: tc.grant}, nil }
+			err := VerifyWithTxs(a, b, [][]byte{{1}}, decode)
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			require.Equal(t, tc.got, b.DeliverTxs[0].Events[0])
+		})
+	}
 }
