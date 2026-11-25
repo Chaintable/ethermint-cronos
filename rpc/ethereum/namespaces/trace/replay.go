@@ -127,14 +127,20 @@ func (api *API) parentValidators(block *tmtypes.Block, header *tmtypes.Header) (
 
 // canonicalObservations matches each reported EVM message to its observation
 // and checks the charged gas and status against the receipt. Messages of a
-// failed Cosmos transaction are discarded with it.
+// failed Cosmos transaction are discarded with it, and so are messages that
+// another message such as authz MsgExec executed, which the RPC does not list.
 func canonicalObservations(msgs []ethMsg, results *tmstate.ABCIResponses, replayed *replay.Result, receipts []*receipt) ([]replay.Transaction, error) {
+	type position struct{ cosmos, msg int }
+	listed := make(map[position]bool, len(msgs))
+	for _, m := range msgs {
+		listed[position{m.cosmos, m.msg}] = true
+	}
 	var selected []replay.Transaction
 	for _, obs := range replayed.Transactions {
 		if obs.CosmosIndex < 0 || obs.CosmosIndex >= len(results.DeliverTxs) {
 			return nil, fmt.Errorf("invalid observed Cosmos index %d", obs.CosmosIndex)
 		}
-		if reported(results.DeliverTxs[obs.CosmosIndex]) {
+		if listed[position{obs.CosmosIndex, obs.MessageIndex}] {
 			selected = append(selected, obs)
 		}
 	}

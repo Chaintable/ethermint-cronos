@@ -245,3 +245,26 @@ func TestPostProcessingFailureReportsGasLimit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(15000), bf.Txs[0].GasUsed.Int64())
 }
+
+// An EVM message executed inside another message, such as authz MsgExec, is
+// observed but not listed by the RPC.
+func TestCanonicalObservationsSkipsNestedMessages(t *testing.T) {
+	a := ethTx(0)
+	hash := a.AsTransaction().Hash()
+	results := &tmstate.ABCIResponses{DeliverTxs: []*abci.ResponseDeliverTx{
+		{Data: msgResult(t, &evmtypes.MsgEthereumTxResponse{Hash: hash.Hex(), GasUsed: 21000}), GasUsed: 21000},
+		{}, // MsgExec wrapping an EVM message
+	}}
+	msgs := []ethMsg{{cosmos: 0, tx: a}}
+	receipts, err := receiptsFromResults(msgs, results)
+	require.NoError(t, err)
+	root := dtypes.Trace{TxID: hash.Hex(), TraceAddress: []int64{}}
+	replayed := &replay.Result{Transactions: []replay.Transaction{
+		{CosmosIndex: 0, Hash: hash, GasUsed: 21000, Trace: traceJSON(t, dtypes.TraceResult{Traces: []dtypes.Trace{root}})},
+		{CosmosIndex: 1, Hash: ethTx(1).AsTransaction().Hash(), GasUsed: 21000, Trace: []byte("{}")},
+	}}
+	selected, err := canonicalObservations(msgs, results, replayed, receipts)
+	require.NoError(t, err)
+	require.Len(t, selected, 1)
+	require.Equal(t, hash, selected[0].Hash)
+}
