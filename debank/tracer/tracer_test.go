@@ -2,6 +2,7 @@ package tracer
 
 import (
 	"encoding/json"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -118,4 +119,21 @@ func TestReplayTracerRootCreateCollision(t *testing.T) {
 	require.Equal(t, strings.ToLower(common.Address{}.Hex()), root.To)
 	require.Equal(t, int64(100000), root.Gas.Int64())
 	require.Equal(t, int64(100000-leftOver), root.GasUsed.Int64())
+}
+
+// A top-level CALL whose value exceeds the sender's balance (an EVM message
+// run by authz MsgExec skips the ante handler) still yields one failed root frame.
+func TestReplayTracerRootInsufficientBalance(t *testing.T) {
+	db, err := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+	require.NoError(t, err)
+	tracer, finish := NewReplayTracer(common.HexToHash("0x03"))
+	_, _, err = runtime.Call(contractB, nil, &runtime.Config{State: db, GasLimit: 21000, Value: big.NewInt(7), EVMConfig: vm.Config{Debug: true, Tracer: tracer}})
+	require.ErrorIs(t, err, vm.ErrInsufficientBalance)
+	res, err := finish(vm.ErrInsufficientBalance.Error())
+	require.NoError(t, err)
+	var tr dtypes.TraceResult
+	require.NoError(t, json.Unmarshal(res.Trace, &tr))
+	require.Empty(t, tr.Traces)
+	require.Len(t, tr.ErrorTraces, 1)
+	require.Equal(t, vm.ErrInsufficientBalance.Error(), tr.ErrorTraces[0].Error)
 }
