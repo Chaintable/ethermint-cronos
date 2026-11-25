@@ -593,6 +593,46 @@ func (suite *StateDBTestSuite) TestIterateStorage() {
 	suite.Require().Equal(1, len(storage))
 }
 
+func TestHookedNativeActionLogs(t *testing.T) {
+	_, ctx, keeper := setupTestEnv(t)
+	inner := statedb.New(ctx, keeper, statedb.NewTxConfig(blockHash, common.Hash{}, 3, 7))
+	var observed []ethtypes.Log
+	hooked := statedb.NewHookedState(inner, &tracing.Hooks{
+		OnLog: func(log *ethtypes.Log) { observed = append(observed, *log) },
+	})
+	convert := func(event sdk.Event) (*ethtypes.Log, error) {
+		return &ethtypes.Log{Data: []byte(event.Type)}, nil
+	}
+	precompile := common.HexToAddress("0x66")
+	child := common.HexToAddress("0x1234")
+	snap := hooked.Snapshot()
+	err := hooked.ExecuteNativeAction(precompile, convert, func(ctx sdk.Context) error {
+		// Cronos CallEVM forwards the logs of a nested module call this way.
+		ctx.Value(statedb.StateDBContextKey).(vm.StateDB).AddLog(&ethtypes.Log{Address: child})
+		ctx.EventManager().EmitEvent(sdk.NewEvent("native"))
+		return nil
+	})
+	require.NoError(t, err)
+	want := []ethtypes.Log{
+		{Address: child, TxIndex: 3, Index: 7},
+		{Address: precompile, Data: []byte("native"), TxIndex: 3, Index: 8},
+	}
+	require.Equal(t, want, observed)
+	require.Equal(t, []*ethtypes.Log{&want[0], &want[1]}, inner.Logs())
+
+	hooked.RevertToSnapshot(snap)
+	require.Empty(t, inner.Logs())
+	require.Equal(t, want, observed)
+
+	err = hooked.ExecuteNativeAction(precompile, convert, func(ctx sdk.Context) error {
+		ctx.EventManager().EmitEvent(sdk.NewEvent("discarded"))
+		return errors.New("failed action")
+	})
+	require.Error(t, err)
+	require.Empty(t, inner.Logs())
+	require.Equal(t, want, observed)
+}
+
 func (suite *StateDBTestSuite) TestNativeAction() {
 	_, ctx, keeper := setupTestEnv(suite.T())
 	storeKey := testStoreKeys["testnative"]
