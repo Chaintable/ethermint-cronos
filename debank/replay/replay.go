@@ -155,7 +155,8 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 			return fmt.Errorf("tx[%d] result data mismatch", i)
 		}
 		if err := compareEvents(w.Events, g.Events); err != nil {
-			if compareEvents(withoutRepeatedConversions(w.Events), g.Events) != nil {
+			events := withoutRepeatedConversions(w.Events)
+			if compareEvents(events, withoutAddedDelegators(events, g.Events)) != nil {
 				return fmt.Errorf("tx[%d]: %w", i, err)
 			}
 		}
@@ -199,6 +200,38 @@ func withoutRepeatedConversions(events []abci.Event) []abci.Event {
 		}
 	}
 	return out
+}
+
+// withoutAddedDelegators drops the delegator attribute that the v1.0.12+ SDK
+// fork added to withdraw_rewards, where the archived event predates it.
+func withoutAddedDelegators(want, got []abci.Event) []abci.Event {
+	if len(want) != len(got) {
+		return got
+	}
+	out := make([]abci.Event, len(got))
+	for i, g := range got {
+		out[i] = g
+		if g.Type != "withdraw_rewards" || want[i].Type != g.Type || hasAttribute(want[i], "delegator") {
+			continue
+		}
+		attrs := make([]abci.EventAttribute, 0, len(g.Attributes))
+		for _, a := range g.Attributes {
+			if string(a.Key) != "delegator" {
+				attrs = append(attrs, a)
+			}
+		}
+		out[i].Attributes = attrs
+	}
+	return out
+}
+
+func hasAttribute(e abci.Event, key string) bool {
+	for _, a := range e.Attributes {
+		if string(a.Key) == key {
+			return true
+		}
+	}
+	return false
 }
 
 func compareEvents(want, got []abci.Event) error {

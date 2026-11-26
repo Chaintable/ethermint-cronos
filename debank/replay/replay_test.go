@@ -108,3 +108,28 @@ func TestVerifyRepeatedConversionEvents(t *testing.T) {
 	noAck := append(tx(conversion, conversion)[:8:8], ev("message", "m"))
 	require.ErrorContains(t, verify(noAck), "event count")
 }
+
+func TestVerifyWithdrawRewardsWithoutDelegator(t *testing.T) {
+	withdraw := func(kv ...string) abci.Event {
+		e := abci.Event{Type: "withdraw_rewards"}
+		for i := 0; i < len(kv); i += 2 {
+			e.Attributes = append(e.Attributes, abci.EventAttribute{Key: []byte(kv[i]), Value: []byte(kv[i+1])})
+		}
+		return e
+	}
+	replayed := withdraw("amount", "0stake", "validator", "v", "delegator", "d", "authz_msg_index", "0")
+	verify := func(archived, got abci.Event) error {
+		want, res := responses(), responses()
+		res.EndBlock.ValidatorUpdates = want.EndBlock.ValidatorUpdates
+		want.DeliverTxs[0].Events, res.DeliverTxs[0].Events = []abci.Event{archived}, []abci.Event{got}
+		return Verify(want, res)
+	}
+	require.NoError(t, verify(withdraw("amount", "0stake", "validator", "v", "authz_msg_index", "0"), replayed))
+
+	require.Error(t, verify(withdraw("amount", "1stake", "validator", "v", "authz_msg_index", "0"), replayed))
+	require.Error(t, verify(withdraw("amount", "0stake", "validator", "v"), replayed))
+	require.Error(t, verify(withdraw("amount", "0stake", "validator", "v", "delegator", "x", "authz_msg_index", "0"), replayed))
+	other, archived := replayed, withdraw("amount", "0stake", "validator", "v", "authz_msg_index", "0")
+	other.Type, archived.Type = "withdraw_commission", "withdraw_commission"
+	require.Error(t, verify(archived, other))
+}
