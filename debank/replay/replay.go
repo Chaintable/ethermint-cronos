@@ -16,7 +16,6 @@ import (
 	"github.com/gogo/protobuf/proto"
 	abci "github.com/tendermint/tendermint/abci/types"
 	tmstate "github.com/tendermint/tendermint/proto/tendermint/state"
-
 )
 
 // Request replays block BeginBlock.Header.Height on the state committed by
@@ -156,7 +155,9 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 			return fmt.Errorf("tx[%d] result data mismatch", i)
 		}
 		if err := compareEvents(w.Events, g.Events); err != nil {
-			return fmt.Errorf("tx[%d]: %w", i, err)
+			if compareEvents(withoutRepeatedConversions(w.Events), g.Events) != nil {
+				return fmt.Errorf("tx[%d]: %w", i, err)
+			}
 		}
 	}
 	if err := compareEvents(want.EndBlock.Events, got.EndBlock.Events); err != nil {
@@ -174,6 +175,30 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 		return fmt.Errorf("consensus parameter updates mismatch")
 	}
 	return nil
+}
+
+// withoutRepeatedConversions drops the second copy of the IBC voucher
+// conversion events that some mainnet builds archived twice (cronos #1102):
+// the run between fungible_token_packet and write_acknowledgement when it
+// consists of the same events repeated.
+func withoutRepeatedConversions(events []abci.Event) []abci.Event {
+	out := make([]abci.Event, 0, len(events))
+	for i := 0; i < len(events); i++ {
+		out = append(out, events[i])
+		if events[i].Type != "fungible_token_packet" {
+			continue
+		}
+		end := i + 1
+		for end < len(events) && events[end].Type != "write_acknowledgement" {
+			end++
+		}
+		run := events[i+1 : end]
+		if half := len(run) / 2; end < len(events) && half > 0 && len(run)%2 == 0 && compareEvents(run[:half], run[half:]) == nil {
+			out = append(out, run[:half]...)
+			i = end - 1
+		}
+	}
+	return out
 }
 
 func compareEvents(want, got []abci.Event) error {

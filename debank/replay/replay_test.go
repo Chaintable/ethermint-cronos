@@ -80,3 +80,31 @@ func TestVerify(t *testing.T) {
 	want.DeliverTxs[0].Log = exceeded + " (archived)"
 	require.NoError(t, Verify(want, got))
 }
+
+func TestVerifyRepeatedConversionEvents(t *testing.T) {
+	ev := func(typ, value string) abci.Event {
+		return abci.Event{Type: typ, Attributes: []abci.EventAttribute{{Key: []byte("amount"), Value: []byte(value)}}}
+	}
+	conversion := []abci.Event{ev("coin_spent", "1ibc/x"), ev("coin_received", "1ibc/x"), ev("coinbase", "10basecro")}
+	tx := func(runs ...[]abci.Event) []abci.Event {
+		events := []abci.Event{ev("recv_packet", "p"), ev("fungible_token_packet", "1")}
+		for _, r := range runs {
+			events = append(events, r...)
+		}
+		return append(events, ev("write_acknowledgement", "ack"))
+	}
+	verify := func(archived []abci.Event) error {
+		want, got := responses(), responses()
+		got.EndBlock.ValidatorUpdates = want.EndBlock.ValidatorUpdates
+		want.DeliverTxs[0].Events, got.DeliverTxs[0].Events = archived, tx(conversion)
+		return Verify(want, got)
+	}
+	require.NoError(t, verify(tx(conversion, conversion)))
+
+	altered := append([]abci.Event{}, conversion...)
+	altered[2] = ev("coinbase", "20basecro")
+	require.ErrorContains(t, verify(tx(conversion, altered)), "event count")
+	require.ErrorContains(t, verify(tx(conversion, conversion, conversion)), "event count")
+	noAck := append(tx(conversion, conversion)[:8:8], ev("message", "m"))
+	require.ErrorContains(t, verify(noAck), "event count")
+}
