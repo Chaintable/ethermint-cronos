@@ -13,7 +13,7 @@ import (
 // SDK #12673 appended the index of each dispatched message to all of its
 // events. Recover the message boundaries from the signed MsgExec and the
 // distribution handlers, independently of the indices reported by the worker.
-func matchHistoricalAuthz(exec *authz.MsgExec, want, got []abci.Event) bool {
+func matchHistoricalAuthz(exec *authz.MsgExec, want, got []abci.Event, legacyFeeVerified bool) bool {
 	if len(want) == 0 || len(want) != len(got) {
 		return false
 	}
@@ -22,6 +22,11 @@ func matchHistoricalAuthz(exec *authz.MsgExec, want, got []abci.Event) bool {
 		return false
 	}
 	archiveIndexed := hasAuthzIndex(want[0])
+	// Fee payer and dispatch indices are present together starting with the
+	// second SDK in this release line. The ante verifier checks the signed fee.
+	if archiveIndexed == legacyFeeVerified {
+		return false
+	}
 	for i, msg := range msgs {
 		size := withdrawalEventCount(msg, got)
 		if size == 0 {
@@ -33,7 +38,11 @@ func matchHistoricalAuthz(exec *authz.MsgExec, want, got []abci.Event) bool {
 		if oldEvents == nil || newEvents == nil {
 			return false
 		}
-		if compareEvents(oldEvents, newEvents) != nil && !matchZeroReward(msg, oldEvents, newEvents) {
+		// Before dispatch indices existed, an unpaid reward was always the
+		// empty coin string; the zero-denom representation came later.
+		_, isReward := msg.(*distrtypes.MsgWithdrawDelegatorReward)
+		legacyZero := !archiveIndexed && isReward && size == 2
+		if (legacyZero || compareEvents(oldEvents, newEvents) != nil) && !matchZeroReward(msg, oldEvents, newEvents) {
 			return false
 		}
 		want, got = want[size:], got[size:]

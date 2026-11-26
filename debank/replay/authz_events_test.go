@@ -45,7 +45,7 @@ func TestHistoricalAuthzWithdrawals(t *testing.T) {
 		return events
 	}
 	for _, indexed := range []bool{false, true} {
-		require.True(t, matchHistoricalAuthz(&exec, makeEvents(indexed, ""), makeEvents(true, "0stake")))
+		require.True(t, matchHistoricalAuthz(&exec, makeEvents(indexed, ""), makeEvents(true, "0stake"), !indexed))
 	}
 	// The archive also contains MsgExec with only a commission withdrawal.
 	onlyCommission := authz.NewMsgExec(sdk.AccAddress("grantee"), []sdk.Msg{commission})
@@ -53,7 +53,10 @@ func TestHistoricalAuthzWithdrawals(t *testing.T) {
 	for i, ev := range gCommission {
 		gCommission[i].Attributes[len(ev.Attributes)-1].Value = []byte("0")
 	}
-	require.True(t, matchHistoricalAuthz(&onlyCommission, wCommission, gCommission))
+	require.True(t, matchHistoricalAuthz(&onlyCommission, wCommission, gCommission, true))
+	require.False(t, matchHistoricalAuthz(&exec, makeEvents(false, "0stake"), makeEvents(true, "0stake"), true))
+	require.False(t, matchHistoricalAuthz(&exec, makeEvents(false, ""), makeEvents(true, "0stake"), false))
+	require.False(t, matchHistoricalAuthz(&exec, makeEvents(true, ""), makeEvents(true, "0stake"), true))
 	errCases := map[string]func([]abci.Event, []abci.Event){
 		"wrong child index": func(_, g []abci.Event) { g[2].Attributes[2].Value = []byte("0") },
 		"wrong archived index": func(w, _ []abci.Event) {
@@ -72,12 +75,12 @@ func TestHistoricalAuthzWithdrawals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			w, g := makeEvents(false, ""), makeEvents(true, "0stake")
 			mutate(w, g)
-			require.False(t, matchHistoricalAuthz(&exec, w, g))
+			require.False(t, matchHistoricalAuthz(&exec, w, g, true))
 		})
 	}
 	w, g := makeEvents(false, ""), makeEvents(true, "0stake")
 	reversed := authz.NewMsgExec(sdk.AccAddress("grantee"), []sdk.Msg{commission, reward})
-	require.False(t, matchHistoricalAuthz(&reversed, w, g))
-	require.False(t, matchHistoricalAuthz(&exec, w[:7], g[:7]))
-	require.False(t, matchHistoricalAuthz(&exec, append(w, w[7]), append(g, g[7])))
+	require.False(t, matchHistoricalAuthz(&reversed, w, g, true))
+	require.False(t, matchHistoricalAuthz(&exec, w[:7], g[:7], true))
+	require.False(t, matchHistoricalAuthz(&exec, append(w, w[7]), append(g, g[7]), true))
 }
