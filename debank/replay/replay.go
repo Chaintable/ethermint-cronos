@@ -155,7 +155,7 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 			return fmt.Errorf("tx[%d] result data mismatch", i)
 		}
 		if err := compareEvents(w.Events, g.Events); err != nil {
-			events := withoutRepeatedConversions(w.Events)
+			events := withoutFailedAckEvents(withoutRepeatedConversions(w.Events))
 			if compareEvents(events, withoutAddedDelegators(events, g.Events)) != nil {
 				return fmt.Errorf("tx[%d]: %w", i, err)
 			}
@@ -202,6 +202,27 @@ func withoutRepeatedConversions(events []abci.Event) []abci.Event {
 	return out
 }
 
+// withoutFailedAckEvents drops the events of a packet callback that returned
+// an error acknowledgement, which ibc-go v5.2.0 archived and v5.2.1 discards.
+func withoutFailedAckEvents(events []abci.Event) []abci.Event {
+	out := make([]abci.Event, 0, len(events))
+	for i := 0; i < len(events); i++ {
+		out = append(out, events[i])
+		if events[i].Type != "recv_packet" || i+1 >= len(events) || events[i+1].Type != "message" {
+			continue
+		}
+		end := i + 2
+		for end < len(events) && events[end].Type != "write_acknowledgement" {
+			end++
+		}
+		if end < len(events) && end > i+2 && bytes.HasPrefix(attribute(events[end], "packet_ack"), []byte(`{"error":`)) {
+			out = append(out, events[i+1])
+			i = end - 1
+		}
+	}
+	return out
+}
+
 // withoutAddedDelegators drops the delegator attribute that the v1.0.12+ SDK
 // fork added to withdraw_rewards, where the archived event predates it.
 func withoutAddedDelegators(want, got []abci.Event) []abci.Event {
@@ -232,6 +253,15 @@ func hasAttribute(e abci.Event, key string) bool {
 		}
 	}
 	return false
+}
+
+func attribute(e abci.Event, key string) []byte {
+	for _, a := range e.Attributes {
+		if string(a.Key) == key {
+			return a.Value
+		}
+	}
+	return nil
 }
 
 func compareEvents(want, got []abci.Event) error {

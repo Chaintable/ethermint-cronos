@@ -133,3 +133,28 @@ func TestVerifyWithdrawRewardsWithoutDelegator(t *testing.T) {
 	other.Type, archived.Type = "withdraw_commission", "withdraw_commission"
 	require.Error(t, verify(archived, other))
 }
+
+func TestVerifyFailedAckEvents(t *testing.T) {
+	ev := func(typ, key, value string) abci.Event {
+		return abci.Event{Type: typ, Attributes: []abci.EventAttribute{{Key: []byte(key), Value: []byte(value)}}}
+	}
+	failed := ev("fungible_token_packet", "success", "false")
+	tx := func(ack string, callback ...abci.Event) []abci.Event {
+		events := []abci.Event{ev("recv_packet", "packet_sequence", "1"), ev("message", "module", "ibc_channel")}
+		events = append(events, callback...)
+		return append(events, ev("write_acknowledgement", "packet_ack", ack), ev("message", "module", "ibc_channel"))
+	}
+	verify := func(archived, replayed []abci.Event) error {
+		want, got := responses(), responses()
+		got.EndBlock.ValidatorUpdates = want.EndBlock.ValidatorUpdates
+		want.DeliverTxs[0].Events, got.DeliverTxs[0].Events = archived, replayed
+		return Verify(want, got)
+	}
+	errAck := `{"error":"ABCI code: 1: error handling packet"}`
+	require.NoError(t, verify(tx(errAck, failed), tx(errAck)))
+	require.NoError(t, verify(tx(errAck, ev("coin_received", "amount", "1"), failed), tx(errAck)))
+
+	require.ErrorContains(t, verify(tx(`{"result":"AQ=="}`, failed), tx(`{"result":"AQ=="}`)), "event count")
+	require.ErrorContains(t, verify(tx(errAck, failed), tx(errAck, ev("fungible_token_packet", "success", "true"))), "event")
+	require.ErrorContains(t, verify(tx(errAck), tx(errAck, failed)), "event count")
+}
