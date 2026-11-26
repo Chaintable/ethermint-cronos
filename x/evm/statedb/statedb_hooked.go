@@ -277,7 +277,13 @@ func (s *HookedStateDB) Error() error {
 // the writes will be revert when either the native action itself fail
 // or the wrapping message call reverted.
 func (s *HookedStateDB) ExecuteNativeAction(contract common.Address, converter EventConverter, action func(ctx sdk.Context) error) error {
-	return s.inner.ExecuteNativeAction(contract, converter, action)
+	if s.hooks.OnLog == nil {
+		return s.inner.ExecuteNativeAction(contract, converter, action)
+	}
+	// Native modules can re-emit nested EVM logs through the context. Both those
+	// logs and the converted SDK events belong to the active precompile frame.
+	ctx := s.inner.Context().WithValue(StateDBContextKey, s)
+	return s.inner.executeNativeAction(ctx, contract, converter, action, s.AddLog)
 }
 
 // Context returns the current context for query native state in precompiles.

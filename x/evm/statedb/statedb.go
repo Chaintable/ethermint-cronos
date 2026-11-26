@@ -370,16 +370,23 @@ func (s *StateDB) revertNativeStateToSnapshot(ms cachemulti.Store) {
 // the writes will be revert when either the native action itself fail
 // or the wrapping message call reverted.
 func (s *StateDB) ExecuteNativeAction(contract common.Address, converter EventConverter, action func(ctx sdk.Context) error) error {
+	return s.executeNativeAction(s.ctx, contract, converter, action, s.AddLog)
+}
+
+func (s *StateDB) executeNativeAction(
+	ctx sdk.Context, contract common.Address, converter EventConverter,
+	action func(sdk.Context) error, addLog func(*ethtypes.Log),
+) error {
 	snapshot := s.snapshotNativeState()
 	eventManager := sdk.NewEventManager()
 
-	if err := action(s.ctx.WithEventManager(eventManager)); err != nil {
+	if err := action(ctx.WithEventManager(eventManager)); err != nil {
 		s.revertNativeStateToSnapshot(snapshot)
 		return err
 	}
 
 	events := eventManager.Events()
-	s.emitNativeEvents(contract, converter, events)
+	s.emitNativeEvents(contract, converter, events, addLog)
 	s.nativeEvents = s.nativeEvents.AppendEvents(events)
 	s.journal.append(nativeChange{snapshot: snapshot, events: len(events)})
 	return nil
@@ -748,7 +755,9 @@ func (s *StateDB) Commit() error {
 	return nil
 }
 
-func (s *StateDB) emitNativeEvents(contract common.Address, converter EventConverter, events []sdk.Event) {
+func (s *StateDB) emitNativeEvents(
+	contract common.Address, converter EventConverter, events []sdk.Event, addLog func(*ethtypes.Log),
+) {
 	if converter == nil {
 		return
 	}
@@ -768,7 +777,7 @@ func (s *StateDB) emitNativeEvents(contract common.Address, converter EventConve
 		}
 
 		log.Address = contract
-		s.AddLog(log)
+		addLog(log)
 	}
 }
 
