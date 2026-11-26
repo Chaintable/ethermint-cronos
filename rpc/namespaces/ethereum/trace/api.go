@@ -120,19 +120,21 @@ func (api *API) resolveBlock(id rpctypes.BlockNumberOrHash) (*tmtypes.Block, err
 }
 
 func (api *API) DebankBlockRaw(ctx context.Context, id rpctypes.BlockNumberOrHash) (*dtypes.DebankOutPut, error) {
-	return api.block(ctx, id, false)
+	return api.block(ctx, id, false, nil)
 }
 
 // ReplayHeight executes a height in the standalone verifier, including non-EVM blocks.
 func ReplayHeight(ctx context.Context, api *API, height rpctypes.BlockNumber) (json.RawMessage, error) {
-	out, err := api.block(ctx, rpctypes.BlockNumberOrHash{BlockNumber: &height}, true)
+	out, err := api.block(ctx, rpctypes.BlockNumberOrHash{BlockNumber: &height}, true, nil)
 	if err != nil {
 		return nil, err
 	}
 	return encodeOutput(out)
 }
 
-func (api *API) block(ctx context.Context, id rpctypes.BlockNumberOrHash, force bool) (_ *dtypes.DebankOutPut, err error) {
+type replayBlockFunc func(context.Context, replay.Request) (*replay.Result, error)
+
+func (api *API) block(ctx context.Context, id rpctypes.BlockNumberOrHash, force bool, run replayBlockFunc) (_ *dtypes.DebankOutPut, err error) {
 	block, err := api.resolveBlock(id)
 	if err != nil {
 		return nil, err
@@ -203,7 +205,7 @@ func (api *API) block(ctx context.Context, id rpctypes.BlockNumberOrHash, force 
 		}
 	}
 	timing.mark("request")
-	result, err := api.replayIfNeeded(ctx, req, replayNeeded)
+	result, err := api.replayIfNeeded(ctx, req, replayNeeded, run)
 	if err != nil {
 		return nil, err
 	}
@@ -338,11 +340,14 @@ func (p *phaseTimer) fields(prefix ...interface{}) []interface{} {
 
 // replayIfNeeded executes the block unless it has no reported EVM messages;
 // such a block yields no traces.
-func (api *API) replayIfNeeded(ctx context.Context, req replay.Request, needed bool) (*replay.Result, error) {
+func (api *API) replayIfNeeded(ctx context.Context, req replay.Request, needed bool, run replayBlockFunc) (*replay.Result, error) {
 	if !needed {
 		return nil, nil
 	}
-	result, err := api.executor.ReplayBlock(ctx, req)
+	if run == nil {
+		run = api.executor.ReplayBlock
+	}
+	result, err := run(ctx, req)
 	if err != nil {
 		return nil, err
 	}
