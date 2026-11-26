@@ -3,9 +3,11 @@ package trace
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/bytedance/sonic"
+	"github.com/ethereum/go-ethereum/common"
 	abci "github.com/tendermint/tendermint/abci/types"
 	tmstate "github.com/tendermint/tendermint/proto/tendermint/state"
 	tmtypes "github.com/tendermint/tendermint/types"
@@ -173,6 +175,15 @@ func canonicalObservations(msgs []ethMsg, results *tmstate.ABCIResponses, replay
 			}
 			selected[i] = obs
 		}
+		// Its archived logs may also carry other values (mainnet H2408223);
+		// the events then take the archived topics and data.
+		if rewritten && !obs.Failed && rc.Status && len(obs.HookLogs) == 0 {
+			var err error
+			if obs, err = adoptArchivedLogs(obs, rc); err != nil {
+				return nil, fmt.Errorf("tx[%d]/msg[%d]: %w", m.cosmos, m.msg, err)
+			}
+			selected[i] = obs
+		}
 		if (!rewritten && obs.GasUsed != rc.ExecutionGas) || obs.Failed == rc.Status {
 			return nil, fmt.Errorf("tx[%d]/msg[%d]: receipt mismatch for %s", m.cosmos, m.msg, hash)
 		}
@@ -193,5 +204,36 @@ func revertObservation(obs replay.Transaction, vmError string) (replay.Transacti
 		return obs, err
 	}
 	obs.Trace, obs.Failed = trace, true
+	return obs, nil
+}
+
+func adoptArchivedLogs(obs replay.Transaction, rc *receipt) (replay.Transaction, error) {
+	var tr dtypes.TraceResult
+	if err := sonic.ConfigStd.Unmarshal(obs.Trace, &tr); err != nil {
+		return obs, err
+	}
+	if len(tr.Events) != len(rc.Logs) {
+		return obs, fmt.Errorf("committed log count: got %d, want %d", len(tr.Events), len(rc.Logs))
+	}
+	for i, lg := range rc.Logs {
+		e := &tr.Events[i]
+		if e.Address != strings.ToLower(lg.Address.Hex()) {
+			return obs, fmt.Errorf("receipt log[%d] address differs from frame event", i)
+		}
+		e.Selector, e.Topics = "", make([]string, 0, len(lg.Topics))
+		for j, t := range lg.Topics {
+			if j == 0 {
+				e.Selector = t.Hex()
+			} else {
+				e.Topics = append(e.Topics, t.Hex())
+			}
+		}
+		e.Data = common.CopyBytes(lg.Data)
+	}
+	trace, err := sonic.ConfigStd.Marshal(&tr)
+	if err != nil {
+		return obs, err
+	}
+	obs.Trace = trace
 	return obs, nil
 }

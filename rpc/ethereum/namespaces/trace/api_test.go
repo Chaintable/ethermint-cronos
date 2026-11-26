@@ -291,3 +291,44 @@ func TestCanonicalObservationsSkipsNestedMessages(t *testing.T) {
 	require.Len(t, selected, 1)
 	require.Equal(t, hash, selected[0].Hash)
 }
+
+// At mainnet H2408223 the archived logs of the row exceeding the block gas
+// limit carry a value other than the execution's; the events follow the archive.
+func TestCanonicalObservationsAdoptsArchivedLogs(t *testing.T) {
+	a := ethTx(0)
+	hash := a.AsTransaction().Hash()
+	msgs := []ethMsg{{cosmos: 0, tx: a}}
+	results := &tmstate.ABCIResponses{DeliverTxs: []*abci.ResponseDeliverTx{{}}}
+	topic := common.HexToHash("0x01")
+	lg := &ethtypes.Log{Address: common.HexToAddress("0xcc"), Topics: []common.Hash{topic, common.HexToHash("0x02")}, Data: []byte{0x4a}, Index: 3}
+	receipts := []*receipt{{Status: true, ExecutionGas: 20000, Logs: []*ethtypes.Log{lg}}}
+	root := dtypes.Trace{ID: "r", TxID: hash.Hex(), TraceAddress: []int64{}}
+	ev := dtypes.Event{Address: "0x00000000000000000000000000000000000000cc", Selector: topic.Hex(), Topics: []string{common.HexToHash("0x02").Hex()}, Data: []byte{0x49}, ParentTraceID: "r"}
+	tr := dtypes.TraceResult{Traces: []dtypes.Trace{root}, Events: []dtypes.Event{ev}}
+	replayed := &replay.Result{
+		Responses:    &tmstate.ABCIResponses{DeliverTxs: []*abci.ResponseDeliverTx{{Code: 11, Log: "out of gas in location: block gas meter; gasWanted: 0, gasUsed: 21000: out of gas"}}},
+		Transactions: []replay.Transaction{{CosmosIndex: 0, Hash: hash, GasUsed: 21000, Trace: traceJSON(t, tr)}},
+	}
+	got, err := canonicalObservations(msgs, results, replayed, receipts)
+	require.NoError(t, err)
+	out, err := receiptTrace(got[0], receipts[0])
+	require.NoError(t, err)
+	require.Equal(t, []byte{0x4a}, []byte(out.Events[0].Data))
+	require.Equal(t, int64(3), out.Events[0].LogIndex)
+
+	// Only the row exceeding the block gas limit follows the archive.
+	replayed.Responses.DeliverTxs[0] = &abci.ResponseDeliverTx{}
+	receipts[0].ExecutionGas = 21000
+	got, err = canonicalObservations(msgs, results, replayed, receipts)
+	require.NoError(t, err)
+	_, err = receiptTrace(got[0], receipts[0])
+	require.ErrorContains(t, err, "content differs")
+
+	// A log from another contract is still rejected.
+	replayed.Responses.DeliverTxs[0] = &abci.ResponseDeliverTx{Code: 11, Log: "out of gas in location: block gas meter; gasWanted: 0, gasUsed: 21000: out of gas"}
+	other := *lg
+	other.Address = common.HexToAddress("0xdd")
+	receipts[0].Logs = []*ethtypes.Log{&other}
+	_, err = canonicalObservations(msgs, results, replayed, receipts)
+	require.ErrorContains(t, err, "address differs")
+}
