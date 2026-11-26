@@ -118,7 +118,13 @@ func (api *API) resolveBlock(id rpctypes.BlockNumberOrHash) (*tmtypes.Block, err
 	return block, nil
 }
 
-func (api *API) DebankBlockRaw(ctx context.Context, id rpctypes.BlockNumberOrHash) (_ *dtypes.DebankOutPut, err error) {
+func (api *API) DebankBlockRaw(ctx context.Context, id rpctypes.BlockNumberOrHash) (*dtypes.DebankOutPut, error) {
+	return api.debankBlockRaw(ctx, id, nil)
+}
+
+type replayBlockFunc func(context.Context, replay.Request) (*replay.Result, error)
+
+func (api *API) debankBlockRaw(ctx context.Context, id rpctypes.BlockNumberOrHash, run replayBlockFunc) (_ *dtypes.DebankOutPut, err error) {
 	block, err := api.resolveBlock(id)
 	if err != nil {
 		return nil, err
@@ -188,7 +194,7 @@ func (api *API) DebankBlockRaw(ctx context.Context, id rpctypes.BlockNumberOrHas
 		}
 	}
 	timing.mark("request")
-	result, err := api.replayIfNeeded(ctx, req, results, replayNeeded)
+	result, err := api.replayIfNeeded(ctx, req, results, replayNeeded, run)
 	if err != nil {
 		return nil, err
 	}
@@ -288,11 +294,14 @@ func (p *phaseTimer) fields(prefix ...interface{}) []interface{} {
 
 // replayIfNeeded executes the block unless it has no reported EVM messages;
 // such a block yields no traces.
-func (api *API) replayIfNeeded(ctx context.Context, req replay.Request, results *tmstate.ABCIResponses, needed bool) (*replay.Result, error) {
+func (api *API) replayIfNeeded(ctx context.Context, req replay.Request, results *tmstate.ABCIResponses, needed bool, run replayBlockFunc) (*replay.Result, error) {
 	if !needed {
 		return nil, nil
 	}
-	result, err := api.executor.ReplayBlock(ctx, req)
+	if run == nil {
+		run = api.executor.ReplayBlock
+	}
+	result, err := run(ctx, req)
 	if err != nil {
 		return nil, err
 	}
