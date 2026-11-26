@@ -19,7 +19,8 @@ import (
 // DeliverTx data. A row rewritten by fix-unlucky-tx is not covered by
 // LastResultsHash; matching it against the observed execution checks it.
 type receipt struct {
-	Status bool
+	Status  bool
+	VmError string
 	// GasUsed is the Cosmos transaction's gas, which the receipt reports.
 	GasUsed uint64
 	// ExecutionGas is the message response's gas, which the observation reports.
@@ -57,6 +58,7 @@ func receiptsFromResults(msgs []ethMsg, results *tmstate.ABCIResponses) ([]*rece
 		}
 		out = append(out, &receipt{
 			Status:       res.VmError == "",
+			VmError:      res.VmError,
 			GasUsed:      uint64(results.DeliverTxs[m.cosmos].GasUsed),
 			ExecutionGas: res.GasUsed,
 			Logs:         evmtypes.LogsToEthereum(res.Logs),

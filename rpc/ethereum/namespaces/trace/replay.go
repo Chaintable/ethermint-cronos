@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/bytedance/sonic"
 	abci "github.com/tendermint/tendermint/abci/types"
 	tmstate "github.com/tendermint/tendermint/proto/tendermint/state"
 	tmtypes "github.com/tendermint/tendermint/types"
 
 	"github.com/tharsis/ethermint/debank/replay"
+	dtracer "github.com/tharsis/ethermint/debank/tracer"
+	dtypes "github.com/tharsis/ethermint/debank/types"
 	evmtypes "github.com/tharsis/ethermint/x/evm/types"
 )
 
@@ -161,9 +164,34 @@ func canonicalObservations(msgs []ethMsg, results *tmstate.ABCIResponses, replay
 		// limit may report different gas than the execution.
 		rewritten := replayed.Responses != nil && m.cosmos < len(replayed.Responses.DeliverTxs) &&
 			replay.ExceedsBlockGas(replayed.Responses.DeliverTxs[m.cosmos])
+		// Its archived row may also report a revert of an execution that
+		// returned; the trace then follows the archive (mainnet H2309561).
+		if rewritten && !obs.Failed && !rc.Status && !rc.PostProcessingFailed {
+			var err error
+			if obs, err = revertObservation(obs, rc.VmError); err != nil {
+				return nil, fmt.Errorf("tx[%d]/msg[%d]: %w", m.cosmos, m.msg, err)
+			}
+			selected[i] = obs
+		}
 		if (!rewritten && obs.GasUsed != rc.ExecutionGas) || obs.Failed == rc.Status {
 			return nil, fmt.Errorf("tx[%d]/msg[%d]: receipt mismatch for %s", m.cosmos, m.msg, hash)
 		}
 	}
 	return selected, nil
+}
+
+func revertObservation(obs replay.Transaction, vmError string) (replay.Transaction, error) {
+	var tr dtypes.TraceResult
+	if err := sonic.ConfigStd.Unmarshal(obs.Trace, &tr); err != nil {
+		return obs, err
+	}
+	if err := dtracer.RevertTrace(&tr, vmError); err != nil {
+		return obs, err
+	}
+	trace, err := sonic.ConfigStd.Marshal(&tr)
+	if err != nil {
+		return obs, err
+	}
+	obs.Trace, obs.Failed = trace, true
+	return obs, nil
 }

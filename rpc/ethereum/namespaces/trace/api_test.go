@@ -130,7 +130,30 @@ func TestCanonicalObservations(t *testing.T) {
 	_, err = canonicalObservations(msgs, results, replayed, receipts)
 	require.NoError(t, err)
 
+	// At mainnet H2309561 the archive reports a revert of the execution that
+	// returned; the trace follows the archive.
+	root := dtypes.Trace{ID: "r", TxID: b.AsTransaction().Hash().Hex(), TraceAddress: []int64{}}
+	child := dtypes.Trace{ID: "c", ParentTraceID: "r", TxID: root.TxID, TraceAddress: []int64{0}, PosInParentTrace: 1}
+	ev := dtypes.Event{ParentTraceID: "r", Position: 0}
 	replayed.Transactions[2].Failed = false
+	replayed.Transactions[2].Trace = traceJSON(t, dtypes.TraceResult{Traces: []dtypes.Trace{root, child}, Events: []dtypes.Event{ev}, StorageContracts: []string{"0xcc"}})
+	receipts[1].VmError = "execution reverted"
+	got, err = canonicalObservations(msgs, results, replayed, receipts)
+	require.NoError(t, err)
+	require.True(t, got[1].Failed)
+	tr, err := receiptTrace(got[1], receipts[1])
+	require.NoError(t, err)
+	require.Empty(t, tr.Traces)
+	require.Empty(t, tr.Events)
+	require.Empty(t, tr.StorageContracts)
+	require.Len(t, tr.ErrorEvents, 1)
+	require.Len(t, tr.ErrorTraces, 2)
+	require.Equal(t, "execution reverted", tr.ErrorTraces[0].Error)
+	require.Equal(t, "parent call failed", tr.ErrorTraces[1].Error)
+
+	// The archive cannot report success for an execution that failed.
+	receipts[1].Status, receipts[1].VmError = true, ""
+	replayed.Transactions[2].Failed = true
 	_, err = canonicalObservations(msgs, results, replayed, receipts)
 	require.ErrorContains(t, err, "receipt mismatch")
 	replayed.Transactions = replayed.Transactions[:2]
