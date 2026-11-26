@@ -75,6 +75,9 @@ func receiptsFromResults(msgs []ethMsg, results *tmstate.ABCIResponses) ([]*rece
 
 func receiptTrace(obs replay.Transaction, rc *receipt) (dtypes.TraceResult, error) {
 	var tr dtypes.TraceResult
+	if len(obs.Trace) == 0 && rc.ExceededBlockGas {
+		return tr, nil
+	}
 	if err := sonic.ConfigStd.Unmarshal(obs.Trace, &tr); err != nil {
 		return tr, err
 	}

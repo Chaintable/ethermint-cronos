@@ -121,6 +121,26 @@ func (api *API) parentValidators(block *tmtypes.Block, header *tmtypes.Header) (
 	return vals, nil
 }
 
+// withUnexecuted adds an empty failed observation for each listed message of a
+// transaction that exceeded the block gas limit after its ante handler failed,
+// so the VM never ran; the RPC still lists it as failed.
+func withUnexecuted(msgs []ethMsg, observed []replay.Transaction, receipts []*receipt) []replay.Transaction {
+	if len(observed) >= len(msgs) {
+		return observed
+	}
+	out := make([]replay.Transaction, 0, len(msgs))
+	j := 0
+	for i, m := range msgs {
+		if j < len(observed) && observed[j].CosmosIndex == m.cosmos && observed[j].MessageIndex == m.msg {
+			out = append(out, observed[j])
+			j++
+		} else if receipts[i].ExceededBlockGas {
+			out = append(out, replay.Transaction{CosmosIndex: m.cosmos, MessageIndex: m.msg, Hash: m.tx.AsTransaction().Hash(), Failed: true})
+		}
+	}
+	return append(out, observed[j:]...)
+}
+
 // canonicalObservations matches each reported EVM message to its observation
 // and checks the charged gas and status against the receipt. Messages of a
 // failed Cosmos transaction are discarded with it, and so are messages that
@@ -140,6 +160,7 @@ func canonicalObservations(msgs []ethMsg, results *tmstate.ABCIResponses, replay
 			selected = append(selected, obs)
 		}
 	}
+	selected = withUnexecuted(msgs, selected, receipts)
 	if len(selected) != len(msgs) {
 		return nil, fmt.Errorf("%d observations for %d EVM messages", len(selected), len(msgs))
 	}
@@ -149,10 +170,10 @@ func canonicalObservations(msgs []ethMsg, results *tmstate.ABCIResponses, replay
 		if obs.CosmosIndex != m.cosmos || obs.MessageIndex != m.msg {
 			return nil, fmt.Errorf("tx[%d]/msg[%d]: missing observation", m.cosmos, m.msg)
 		}
-		if obs.Hash != hash || obs.Error != "" || len(obs.Trace) == 0 {
+		rc := receipts[i]
+		if obs.Hash != hash || obs.Error != "" || (len(obs.Trace) == 0 && !rc.ExceededBlockGas) {
 			return nil, fmt.Errorf("tx[%d]/msg[%d]: invalid observation for %s: %s", m.cosmos, m.msg, hash, obs.Error)
 		}
-		rc := receipts[i]
 		if rc.ExceededBlockGas {
 			if !obs.Failed {
 				return nil, fmt.Errorf("tx[%d]/msg[%d]: %s exceeded the block gas limit but was not observed as failed", m.cosmos, m.msg, hash)
