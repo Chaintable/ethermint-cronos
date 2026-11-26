@@ -351,3 +351,37 @@ func TestBaseFee(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, fee.Sign())
 }
+
+// A transaction whose ante handler failed once the block gas meter was full
+// is code 11 too, but the VM never ran (H7317940 tx 64).
+func TestBlockGasExceededWithoutExecution(t *testing.T) {
+	exceeded := &abci.ResponseDeliverTx{Code: 11, Log: "out of gas in location: block gas meter; gasWanted: 21000, gasUsed: 87450: out of gas"}
+	a, b := ethTx(0), ethTx(1)
+	msgs := []ethMsg{{cosmos: 0, tx: a}, {cosmos: 1, tx: b}}
+	results := &tmstate.ABCIResponses{DeliverTxs: []*abci.ResponseDeliverTx{{
+		Data:    msgResult(t, &evmtypes.MsgEthereumTxResponse{Hash: a.AsTransaction().Hash().Hex(), GasUsed: 21000}),
+		GasUsed: 21000,
+	}, exceeded}}
+	receipts, err := receiptsFromResults(msgs, results)
+	require.NoError(t, err)
+	hash := a.AsTransaction().Hash()
+	root := dtypes.Trace{TxID: hash.Hex(), TraceAddress: []int64{}}
+	replayed := &replay.Result{Transactions: []replay.Transaction{{Hash: hash, GasUsed: 21000, Trace: traceJSON(t, dtypes.TraceResult{Traces: []dtypes.Trace{root}})}}}
+	observed, err := canonicalObservations(msgs, results, replayed, receipts)
+	require.NoError(t, err)
+	api := &API{chainID: big.NewInt(25)}
+	bf, _, err := api.assembleBlockFile(dtypes.Block{}, msgs, observed, receipts)
+	require.NoError(t, err)
+	require.Len(t, bf.Txs, 2)
+	require.False(t, bf.Txs[1].Status)
+	require.Equal(t, int64(21000), bf.Txs[1].GasUsed.Int64())
+	require.Len(t, bf.Traces, 1)
+	require.Empty(t, bf.ErrorTraces)
+
+	// A missing observation of an executed message is still an error.
+	results.DeliverTxs[1] = &abci.ResponseDeliverTx{Data: msgResult(t, &evmtypes.MsgEthereumTxResponse{Hash: b.AsTransaction().Hash().Hex(), GasUsed: 21000}), GasUsed: 21000}
+	receipts, err = receiptsFromResults(msgs, results)
+	require.NoError(t, err)
+	_, err = canonicalObservations(msgs, results, replayed, receipts)
+	require.ErrorContains(t, err, "observations for 2 EVM messages")
+}
