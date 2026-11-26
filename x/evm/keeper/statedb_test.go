@@ -408,7 +408,7 @@ func (suite *KeeperTestSuite) TestCommittedState() {
 }
 
 func (suite *KeeperTestSuite) TestSuicide() {
-	code := []byte("code")
+	code := common.FromHex("0x602a60005260206000f3") // Return the word 42.
 	db := suite.StateDB()
 	// Add code to account
 	db.SetCode(suite.address, code)
@@ -448,7 +448,13 @@ func (suite *KeeperTestSuite) TestSuicide() {
 	suite.Require().Nil(db.GetCode(suite.address))
 
 	// Check code is still present in addr2 and suicided is false
-	suite.Require().NotNil(db.GetCode(addr2))
+	cfg, err := suite.app.EvmKeeper.EVMConfig(suite.ctx)
+	suite.Require().NoError(err)
+	msg := ethtypes.NewMessage(suite.address, &addr2, 0, big.NewInt(0), 100000, big.NewInt(0), big.NewInt(0), big.NewInt(0), nil, nil, false)
+	evm := suite.app.EvmKeeper.NewEVM(suite.ctx, msg, cfg, nil, db)
+	ret, _, err := evm.StaticCall(vm.AccountRef(suite.address), addr2, nil, 100000)
+	suite.Require().NoError(err)
+	suite.Require().Equal(common.LeftPadBytes([]byte{42}, 32), ret)
 	suite.Require().Equal(false, db.HasSuicided(addr2))
 
 	// Check state is deleted
