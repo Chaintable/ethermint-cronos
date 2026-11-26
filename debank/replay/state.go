@@ -95,13 +95,17 @@ func (w *StateWrites) record(s store.StoreKey, key []byte) {
 	}
 }
 
+type stateView interface {
+	GetKVStore(store.StoreKey) store.KVStore
+}
+
 type visibleAccount struct {
 	nonce   uint64
 	balance uint256.Int
 	code    common.Hash
 }
 
-func (w *StateWrites) account(ms store.MultiStore, cdc codec.BinaryCodec, addr common.Address) (visibleAccount, bool, error) {
+func (w *StateWrites) account(ms stateView, cdc codec.BinaryCodec, addr common.Address) (visibleAccount, bool, error) {
 	a := visibleAccount{code: crypto.Keccak256Hash(nil)}
 	if ms == nil {
 		return a, false, nil
@@ -130,10 +134,10 @@ func (w *StateWrites) account(ms store.MultiStore, cdc codec.BinaryCodec, addr c
 	}
 	return a, raw != nil || !a.balance.IsZero(), nil
 }
-func (w *StateWrites) Diff(cdc codec.BinaryCodec, before, after store.MultiStore) (wire.TransactionStateDiff, error) {
+func (w *StateWrites) Diff(cdc codec.BinaryCodec, before, after stateView) (wire.TransactionStateDiff, error) {
 	var diff wire.TransactionStateDiff
 	for address := range w.addresses {
-		a, _, err := w.account(before, cdc, address)
+		a, existed, err := w.account(before, cdc, address)
 		if err != nil {
 			return diff, err
 		}
@@ -141,7 +145,7 @@ func (w *StateWrites) Diff(cdc codec.BinaryCodec, before, after store.MultiStore
 		if err != nil {
 			return diff, err
 		}
-		if a == b {
+		if a == b && existed == present {
 			continue
 		}
 		h := crypto.Keccak256Hash(address.Bytes())

@@ -4,6 +4,9 @@ package archive
 
 import (
 	"fmt"
+	"github.com/cosmos/cosmos-sdk/codec"
+	"github.com/evmos/ethermint/debank/replay"
+	wire "github.com/evmos/ethermint/debank/types"
 
 	dbm "github.com/cometbft/cometbft-db"
 	tmstate "github.com/cometbft/cometbft/proto/tendermint/state"
@@ -15,6 +18,7 @@ import (
 )
 
 type Archive struct {
+	cdc    codec.BinaryCodec
 	blocks *store.BlockStore
 	state  sm.Store
 	app    dbm.DB
@@ -22,11 +26,11 @@ type Archive struct {
 
 // New wraps the blockstore, state and application databases, which the caller
 // opens read-only.
-func New(blockstore, state, application dbm.DB) *Archive {
+func New(blockstore, state, application dbm.DB, cdc codec.BinaryCodec) *Archive {
 	return &Archive{
 		blocks: store.NewBlockStore(blockstore),
 		state:  sm.NewStore(state, sm.StoreOptions{DiscardABCIResponses: false}),
-		app:    application,
+		app:    application, cdc: cdc,
 	}
 }
 
@@ -68,7 +72,8 @@ func (a *Archive) Validators(height int64) (*tmtypes.ValidatorSet, error) {
 }
 
 func (a *Archive) ConsensusParams(height int64) (tmproto.ConsensusParams, error) {
-	p, err := a.state.LoadConsensusParams(height); return p.ToProto(), err
+	p, err := a.state.LoadConsensusParams(height)
+	return p.ToProto(), err
 }
 
 // StoreGet reads key from the named module store as committed at height.
@@ -81,4 +86,8 @@ func (a *Archive) StoreGet(height int64, name string, key []byte) ([]byte, error
 		return nil, fmt.Errorf("load %s store at %d: %w", name, height, err)
 	}
 	return tree.Get(key)
+}
+
+func (a *Archive) StateDiff(height int64, denom string) (wire.TransactionStateDiff, error) {
+	return replay.ArchivedDiff(a.app, a.cdc, height, denom)
 }

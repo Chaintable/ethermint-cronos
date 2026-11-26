@@ -19,7 +19,7 @@ func TestStoreGetAtHeight(t *testing.T) {
 	_, _, err = tree.SaveVersion()
 	require.NoError(t, err)
 
-	a := New(dbm.NewMemDB(), dbm.NewMemDB(), app)
+	a := New(dbm.NewMemDB(), dbm.NewMemDB(), app, nil)
 	v, err := a.StoreGet(1, "params", []byte("evm/EvmDenom"))
 	require.NoError(t, err)
 	require.Equal(t, `"basecro"`, string(v))

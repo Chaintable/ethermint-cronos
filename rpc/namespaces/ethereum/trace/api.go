@@ -35,6 +35,7 @@ import (
 
 // Chain is the archived consensus and application data of past heights.
 type Chain interface {
+	StateDiff(int64, string) (dtypes.TransactionStateDiff, error)
 	Head() int64
 	Block(height int64) (*tmtypes.Block, error)
 	BlockByHash(hash []byte) (*tmtypes.Block, error)
@@ -304,6 +305,11 @@ func (api *API) block(ctx context.Context, id rpctypes.BlockNumberOrHash, force 
 	var changes dtypes.TransactionStateDiff
 	if result != nil {
 		changes = result.StateDiff
+	} else {
+		changes, err = api.chain.StateDiff(height, evmDenom)
+		if err != nil {
+			return nil, err
+		}
 	}
 	diff := dtracer.BuildBlockStateDiff(common.BytesToHash(parent.AppHash), header.StateRoot, changes)
 	return &dtypes.DebankOutPut{Header: header, BlockFile: blockFile, StateDiff: &diff, ValidationHash: blockFile.Validation().ValidationHash}, nil
