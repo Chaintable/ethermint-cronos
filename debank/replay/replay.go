@@ -14,6 +14,8 @@ import (
 	"github.com/bytedance/sonic"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	authante "github.com/cosmos/cosmos-sdk/x/auth/ante"
+	"github.com/cosmos/cosmos-sdk/x/authz"
+	distrtypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gogo/protobuf/proto"
 	abci "github.com/tendermint/tendermint/abci/types"
@@ -142,8 +144,7 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 	return VerifyWithTxs(want, got, nil, nil)
 }
 
-// VerifyWithTxs additionally recognizes the legacy SDK fee event using the
-// original Cosmos transaction. All other events use the strict comparison.
+// VerifyWithTxs checks known historical SDK event formats against their original messages.
 func VerifyWithTxs(want, got *tmstate.ABCIResponses, txs [][]byte, decode sdk.TxDecoder) error {
 	if want == nil || got == nil || want.BeginBlock == nil || want.EndBlock == nil || got.BeginBlock == nil || got.EndBlock == nil {
 		return fmt.Errorf("missing block results")
@@ -172,7 +173,9 @@ func VerifyWithTxs(want, got *tmstate.ABCIResponses, txs [][]byte, decode sdk.Tx
 			events = legacyFeeEvents(w.Events, events, txs[i], decode)
 		}
 		if err := compareEvents(w.Events, events); err != nil {
-			return fmt.Errorf("tx[%d]: %w", i, err)
+			if w.Code != 0 || decode == nil || i >= len(txs) || !matchHistoricalMessages(w.Events, events, txs[i], decode) {
+				return fmt.Errorf("tx[%d]: %w", i, err)
+			}
 		}
 	}
 	if err := compareEvents(want.EndBlock.Events, got.EndBlock.Events); err != nil {
@@ -232,6 +235,72 @@ func legacyFeeEvents(want, got []abci.Event, raw []byte, decode sdk.TxDecoder) [
 		return normalized
 	}
 	return got
+}
+
+// A successful explicit zero withdrawal emits no bank transfer. The old SDK
+// rendered empty coins as "", while the newer SDK emits a zero coin.
+func matchZeroReward(msg sdk.Msg, want, got []abci.Event) bool {
+	withdrawal, ok := msg.(*distrtypes.MsgWithdrawDelegatorReward)
+	if !ok {
+		return false
+	}
+	events := func(amount string) []abci.Event {
+		return sdk.Events{
+			sdk.NewEvent(distrtypes.EventTypeWithdrawRewards,
+				sdk.NewAttribute(sdk.AttributeKeyAmount, amount),
+				sdk.NewAttribute(distrtypes.AttributeKeyValidator, withdrawal.ValidatorAddress)),
+			sdk.NewEvent(sdk.EventTypeMessage,
+				sdk.NewAttribute(sdk.AttributeKeyModule, distrtypes.ModuleName),
+				sdk.NewAttribute(sdk.AttributeKeySender, withdrawal.DelegatorAddress)),
+		}.ToABCIEvents()
+	}
+	denom, _ := sdk.GetBaseDenom()
+	if denom == "" {
+		denom = sdk.DefaultBondDenom
+	}
+	return compareEvents(events(""), want) == nil &&
+		compareEvents(events(sdk.NewCoin(denom, sdk.ZeroInt()).String()), got) == nil
+}
+
+// BaseApp prefixes each top-level message's handler events with its action.
+func matchHistoricalMessages(want, got []abci.Event, raw []byte, decode sdk.TxDecoder) bool {
+	if len(want) != len(got) {
+		return false
+	}
+	var starts []int
+	for i, e := range got {
+		if e.Type == sdk.EventTypeMessage && len(e.Attributes) == 1 && string(e.Attributes[0].Key) == sdk.AttributeKeyAction {
+			starts = append(starts, i)
+		}
+	}
+	if len(starts) == 0 || compareEvents(want[:starts[0]], got[:starts[0]]) != nil {
+		return false
+	}
+	tx, err := decode(raw)
+	if err != nil || tx == nil {
+		return false
+	}
+	msgs := tx.GetMsgs()
+	if len(msgs) != len(starts) {
+		return false
+	}
+	starts = append(starts, len(got))
+	for i, msg := range msgs {
+		start, end := starts[i], starts[i+1]
+		if string(got[start].Attributes[0].Value) != sdk.MsgTypeURL(msg) ||
+			compareEvents(want[start:start+1], got[start:start+1]) != nil {
+			return false
+		}
+		w, g := want[start+1:end], got[start+1:end]
+		if compareEvents(w, g) == nil || matchZeroReward(msg, w, g) {
+			continue
+		}
+		exec, ok := msg.(*authz.MsgExec)
+		if !ok || !matchHistoricalAuthz(exec, w, g) {
+			return false
+		}
+	}
+	return true
 }
 
 func compareEvents(want, got []abci.Event) error {

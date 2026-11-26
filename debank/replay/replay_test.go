@@ -7,6 +7,7 @@ import (
 	"time"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	distrtypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
 	"github.com/stretchr/testify/require"
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/crypto/ed25519"
@@ -129,6 +130,87 @@ func TestHistoricalFeeEvent(t *testing.T) {
 				require.Error(t, err)
 			}
 			require.Equal(t, tc.got, b.DeliverTxs[0].Events[0])
+		})
+	}
+}
+
+type rewardTestTx struct {
+	sdk.Tx
+	msgs []sdk.Msg
+}
+
+func (t rewardTestTx) GetMsgs() []sdk.Msg { return t.msgs }
+
+func TestHistoricalZeroWithdrawal(t *testing.T) {
+	reward := &distrtypes.MsgWithdrawDelegatorReward{DelegatorAddress: "delegator", ValidatorAddress: "validator"}
+	commission := &distrtypes.MsgWithdrawValidatorCommission{ValidatorAddress: "validator"}
+	msgs := []sdk.Msg{reward, commission}
+	events := func(amount string) []abci.Event {
+		return sdk.Events{
+			sdk.NewEvent("message", sdk.NewAttribute("action", sdk.MsgTypeURL(reward))),
+			sdk.NewEvent("withdraw_rewards", sdk.NewAttribute("amount", amount), sdk.NewAttribute("validator", "validator")),
+			sdk.NewEvent("message", sdk.NewAttribute("module", "distribution"), sdk.NewAttribute("sender", "delegator")),
+			sdk.NewEvent("message", sdk.NewAttribute("action", sdk.MsgTypeURL(commission))),
+			sdk.NewEvent("transfer", sdk.NewAttribute("amount", "23basecro")),
+			sdk.NewEvent("withdraw_commission", sdk.NewAttribute("amount", "23basecro")),
+			sdk.NewEvent("message", sdk.NewAttribute("module", "distribution"), sdk.NewAttribute("sender", "validator")),
+		}.ToABCIEvents()
+	}
+	cases := []struct {
+		name, old, new string
+		change         func(*abci.ResponseDeliverTx, *abci.ResponseDeliverTx)
+		valid          bool
+	}{
+		{"zero reward before paid commission", "", "0stake", nil, true},
+		{"strict modern equal", "0stake", "0stake", nil, true},
+		{"strict paid equal", "4basecro", "4basecro", nil, true},
+		{"wrong archive amount", "1stake", "0stake", nil, false},
+		{"wrong replay amount", "", "1stake", nil, false},
+		{"wrong zero denom", "", "0basecro", nil, false},
+		{"wrong signed validator", "", "0stake", func(w, g *abci.ResponseDeliverTx) {
+			w.Events[1].Attributes[1].Value = []byte("other")
+			g.Events[1].Attributes[1].Value = []byte("other")
+		}, false},
+		{"wrong sender", "", "0stake", func(w, g *abci.ResponseDeliverTx) {
+			w.Events[2].Attributes[1].Value = []byte("other")
+			g.Events[2].Attributes[1].Value = []byte("other")
+		}, false},
+		{"wrong message index", "", "0stake", func(w, g *abci.ResponseDeliverTx) {
+			for _, r := range []*abci.ResponseDeliverTx{w, g} {
+				r.Events[0], r.Events[3] = r.Events[3], r.Events[0]
+			}
+		}, false},
+		{"reward with payment", "", "0stake", func(w, g *abci.ResponseDeliverTx) {
+			for _, r := range []*abci.ResponseDeliverTx{w, g} {
+				r.Events = append(r.Events[:1], append([]abci.Event{r.Events[4]}, r.Events[1:]...)...)
+			}
+		}, false},
+		{"later event changed", "", "0stake", func(w, g *abci.ResponseDeliverTx) {
+			g.Events[4].Attributes[0].Value = []byte("24basecro")
+		}, false},
+		{"failed cosmos tx", "", "0stake", func(w, g *abci.ResponseDeliverTx) {
+			w.Code, g.Code = 1, 1
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, g := responses(), responses()
+			g.EndBlock = w.EndBlock
+			a, b := w.DeliverTxs[0], g.DeliverTxs[0]
+			a.Events, b.Events = events(tc.old), events(tc.new)
+			if tc.change != nil {
+				tc.change(a, b)
+			}
+			if tc.old != tc.new {
+				require.Error(t, Verify(w, g))
+			}
+			decode := func([]byte) (sdk.Tx, error) { return rewardTestTx{msgs: msgs}, nil }
+			err := VerifyWithTxs(w, g, [][]byte{{1}}, decode)
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
 		})
 	}
 }
