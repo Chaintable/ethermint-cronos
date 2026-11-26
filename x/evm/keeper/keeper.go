@@ -10,6 +10,7 @@ import (
 	paramtypes "github.com/cosmos/cosmos-sdk/x/params/types"
 	"github.com/ethereum/go-ethereum/common"
 	ethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/palantir/stacktrace"
 	"github.com/tendermint/tendermint/libs/log"
 
@@ -55,8 +56,20 @@ type Keeper struct {
 	// EVM Hooks for tx post-processing
 	hooks types.EvmHooks
 
+	// observer traces signed EVM messages on private replay apps only
+	observer TransactionObserver
+
 	// error from previous state operation
 	stateErr error
+}
+
+// TransactionObserver returns the tracer for one signed EVM message and a
+// function that receives the message's final result.
+type TransactionObserver func(hash common.Hash) (vm.Tracer, func(*types.MsgEthereumTxResponse, error))
+
+// SetTransactionObserver must only be used on an app that never serves consensus.
+func (k *Keeper) SetTransactionObserver(o TransactionObserver) {
+	k.observer = o
 }
 
 // NewKeeper generates new evm module keeper
