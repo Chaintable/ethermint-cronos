@@ -7,6 +7,7 @@ import (
 	"time"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/cosmos/cosmos-sdk/x/authz"
 	distrtypes "github.com/cosmos/cosmos-sdk/x/distribution/types"
 	"github.com/stretchr/testify/require"
 	abci "github.com/tendermint/tendermint/abci/types"
@@ -207,6 +208,63 @@ func TestHistoricalZeroWithdrawal(t *testing.T) {
 			decode := func([]byte) (sdk.Tx, error) { return rewardTestTx{msgs: msgs}, nil }
 			err := VerifyWithTxs(w, g, [][]byte{{1}}, decode)
 			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}
+
+type feeMessages struct {
+	signedFee
+	msgs []sdk.Msg
+}
+
+func (t feeMessages) GetMsgs() []sdk.Msg { return t.msgs }
+
+func TestHistoricalFeeAndAuthzFormats(t *testing.T) {
+	msg := &distrtypes.MsgWithdrawValidatorCommission{ValidatorAddress: "validator"}
+	payer := sdk.AccAddress(bytes.Repeat([]byte{1}, 20))
+	exec := authz.NewMsgExec(payer, []sdk.Msg{msg})
+	makeEvents := func(feePayer, indices bool) []abci.Event {
+		fee := sdk.NewEvent("tx", sdk.NewAttribute("fee", "123basecro"))
+		if feePayer {
+			fee.Attributes = append(fee.Attributes, sdk.NewAttribute("fee_payer", payer.String()).ToKVPair())
+		}
+		events := sdk.Events{
+			fee, sdk.NewEvent("message", sdk.NewAttribute("action", sdk.MsgTypeURL(&exec))),
+			sdk.NewEvent("coin_spent", sdk.NewAttribute("spender", "distribution-account"), sdk.NewAttribute("amount", "3basecro")),
+			sdk.NewEvent("coin_received", sdk.NewAttribute("receiver", "withdraw-address"), sdk.NewAttribute("amount", "3basecro")),
+			sdk.NewEvent("transfer", sdk.NewAttribute("recipient", "withdraw-address"), sdk.NewAttribute("sender", "distribution-account"), sdk.NewAttribute("amount", "3basecro")),
+			sdk.NewEvent("message", sdk.NewAttribute("sender", "distribution-account")),
+			sdk.NewEvent("withdraw_commission", sdk.NewAttribute("amount", "3basecro")),
+			sdk.NewEvent("message", sdk.NewAttribute("module", "distribution"), sdk.NewAttribute("sender", "validator")),
+		}.ToABCIEvents()
+		if indices {
+			for i := 2; i < len(events); i++ {
+				events[i].Attributes = append(events[i].Attributes, sdk.NewAttribute("authz_msg_index", "0").ToKVPair())
+			}
+		}
+		return events
+	}
+	for _, tc := range []struct {
+		name                  string
+		feePayer, indices, ok bool
+	}{
+		{"legacy", false, false, true},
+		{"modern", true, true, true},
+		{"legacy fee with indexed events", false, true, false},
+		{"modern fee with unindexed events", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, b := responses(), responses()
+			b.EndBlock = a.EndBlock
+			a.DeliverTxs[0].Events = makeEvents(tc.feePayer, tc.indices)
+			b.DeliverTxs[0].Events = makeEvents(true, true)
+			decode := func([]byte) (sdk.Tx, error) { return feeMessages{signedFee{payer: payer}, []sdk.Msg{&exec}}, nil }
+			err := VerifyWithTxs(a, b, [][]byte{{1}}, decode)
+			if tc.ok {
 				require.NoError(t, err)
 			} else {
 				require.Error(t, err)

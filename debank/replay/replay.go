@@ -169,11 +169,12 @@ func VerifyWithTxs(want, got *tmstate.ABCIResponses, txs [][]byte, decode sdk.Tx
 			return fmt.Errorf("tx[%d] result data mismatch", i)
 		}
 		events := g.Events
+		legacyFeeVerified := false
 		if decode != nil && i < len(txs) {
-			events = legacyFeeEvents(w.Events, events, txs[i], decode)
+			events, legacyFeeVerified = legacyFeeEvents(w.Events, events, txs[i], decode)
 		}
 		if err := compareEvents(w.Events, events); err != nil {
-			if w.Code != 0 || decode == nil || i >= len(txs) || !matchHistoricalMessages(w.Events, events, txs[i], decode) {
+			if w.Code != 0 || decode == nil || i >= len(txs) || !matchHistoricalMessages(w.Events, events, txs[i], decode, legacyFeeVerified) {
 				return fmt.Errorf("tx[%d]: %w", i, err)
 			}
 		}
@@ -197,9 +198,9 @@ func VerifyWithTxs(want, got *tmstate.ABCIResponses, txs [][]byte, decode sdk.Tx
 
 // DeductFeeDecorator emits the first tx event, before signature and message
 // execution events. SDK v0.45.7 added fee_payer to the previous fee-only event.
-func legacyFeeEvents(want, got []abci.Event, raw []byte, decode sdk.TxDecoder) []abci.Event {
+func legacyFeeEvents(want, got []abci.Event, raw []byte, decode sdk.TxDecoder) ([]abci.Event, bool) {
 	if len(want) != len(got) {
-		return got
+		return got, false
 	}
 	for i, ev := range got {
 		if ev.Type != sdk.EventTypeTx {
@@ -230,11 +231,24 @@ func legacyFeeEvents(want, got []abci.Event, raw []byte, decode sdk.TxDecoder) [
 		if len(payer) == 0 || payer.String() != string(ev.Attributes[1].Value) {
 			break
 		}
+		// This SDK predates both fee_payer and authz dispatch indices. Keep
+		// the ante mismatch if the archived MsgExec already has such indices.
+		for _, event := range want {
+			if !hasAuthzIndex(event) {
+				continue
+			}
+			for _, msg := range tx.GetMsgs() {
+				if _, ok := msg.(*authz.MsgExec); ok {
+					return got, false
+				}
+			}
+			break
+		}
 		normalized := append([]abci.Event(nil), got...)
 		normalized[i].Attributes = ev.Attributes[:1]
-		return normalized
+		return normalized, true
 	}
-	return got
+	return got, false
 }
 
 // A successful explicit zero withdrawal emits no bank transfer. The old SDK
@@ -263,7 +277,7 @@ func matchZeroReward(msg sdk.Msg, want, got []abci.Event) bool {
 }
 
 // BaseApp prefixes each top-level message's handler events with its action.
-func matchHistoricalMessages(want, got []abci.Event, raw []byte, decode sdk.TxDecoder) bool {
+func matchHistoricalMessages(want, got []abci.Event, raw []byte, decode sdk.TxDecoder, legacyFeeVerified bool) bool {
 	if len(want) != len(got) {
 		return false
 	}
@@ -296,7 +310,7 @@ func matchHistoricalMessages(want, got []abci.Event, raw []byte, decode sdk.TxDe
 			continue
 		}
 		exec, ok := msg.(*authz.MsgExec)
-		if !ok || !matchHistoricalAuthz(exec, w, g) {
+		if !ok || !matchHistoricalAuthz(exec, w, g, legacyFeeVerified) {
 			return false
 		}
 	}
