@@ -23,7 +23,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/pprof"
+	"sync"
 
+	iavlstore "cosmossdk.io/store/iavl"
+	storetypes "cosmossdk.io/store/types"
 	"github.com/cosmos/cosmos-sdk/codec"
 	"github.com/cosmos/cosmos-sdk/crypto/keyring"
 	"github.com/cosmos/cosmos-sdk/telemetry"
@@ -33,9 +36,12 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	abcicli "github.com/cometbft/cometbft/abci/client"
 	abciserver "github.com/cometbft/cometbft/abci/server"
+	abcitypes "github.com/cometbft/cometbft/abci/types"
 	tcmd "github.com/cometbft/cometbft/cmd/cometbft/commands"
 	cmtcfg "github.com/cometbft/cometbft/config"
+	cmtsync "github.com/cometbft/cometbft/libs/sync"
 	"github.com/cometbft/cometbft/node"
 	"github.com/cometbft/cometbft/p2p"
 	pvm "github.com/cometbft/cometbft/privval"
@@ -63,6 +69,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	genutiltypes "github.com/cosmos/cosmos-sdk/x/genutil/types"
 
+	"github.com/evmos/ethermint/debank/statediff"
 	"github.com/evmos/ethermint/indexer"
 	ethdebug "github.com/evmos/ethermint/rpc/namespaces/ethereum/debug"
 	"github.com/evmos/ethermint/server/config"
@@ -361,6 +368,10 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 	var (
 		tmNode   *node.Node
 		gRPCOnly = svrCtx.Viper.GetBool(srvflags.GRPCOnly)
+		// Serializes consensus ABCI calls, and is shared with the in-process
+		// readers that touch the live commit store outside of ABCI. See
+		// consensusMutexClientCreator.
+		abciMtx = new(cmtsync.Mutex)
 	)
 
 	if gRPCOnly {
@@ -372,12 +383,16 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 
 		cmtApp := server.NewCometABCIWrapper(app)
 
-		var clientCreator proxy.ClientCreator
-		if svrCtx.Viper.GetBool(FlagAsyncCheckTx) {
+		clientCreator := &consensusMutexClientCreator{
+			mtx: abciMtx,
+			app: cmtApp,
+			// Same concurrency models as cometbft's own local client creators:
+			// with async check tx only consensus is serialized, otherwise every
+			// connection shares the mutex.
+			syncAllConnections: !svrCtx.Viper.GetBool(FlagAsyncCheckTx),
+		}
+		if !clientCreator.syncAllConnections {
 			logger.Info("enabling async check tx")
-			clientCreator = proxy.NewConsensusSyncLocalClientCreator(cmtApp)
-		} else {
-			clientCreator = proxy.NewLocalClientCreator(cmtApp)
 		}
 
 		tmNode, err = node.NewNodeWithContext(
@@ -470,7 +485,7 @@ func startInProcess(svrCtx *server.Context, clientCtx client.Context, opts Start
 
 	startAPIServer(ctx, svrCtx, clientCtx, g, config.Config, app, grpcSrv, metrics)
 
-	clientCtx, err = startJSONRPCServer(ctx, svrCtx, clientCtx, g, config, genDocProvider, idxer, app)
+	clientCtx, err = startJSONRPCServer(ctx, svrCtx, clientCtx, g, config, genDocProvider, idxer, app, abciMtx)
 	if err != nil {
 		return err
 	}
@@ -651,13 +666,13 @@ func startJSONRPCServer(
 	genDocProvider node.GenesisDocProvider,
 	idxer ethermint.EVMTxIndexer,
 	app types.Application,
+	abciMtx sync.Locker,
 ) (ctx client.Context, err error) {
 	ctx = clientCtx
 	if !config.JSONRPC.Enable {
 		return
 	}
-
-	txApp, ok := app.(PendingTxListener)
+	txApp, ok := app.(AppWithPendingTxListener)
 	if !ok {
 		return ctx, fmt.Errorf("json-rpc server requires AppWithPendingTxStream")
 	}
@@ -668,8 +683,92 @@ func startJSONRPCServer(
 	}
 
 	ctx = clientCtx.WithChainID(genDoc.ChainID)
-	_, err = StartJSONRPC(stdCtx, svrCtx, clientCtx, g, &config, idxer, txApp)
+	_, err = StartJSONRPC(stdCtx, svrCtx, clientCtx, g, &config, idxer, txApp, abciMtx)
 	return
+}
+
+// consensusMutexClientCreator mirrors cometbft's local client creators but
+// keeps a handle on the mutex that serializes consensus ABCI calls
+// (FinalizeBlock/Commit). The DeBank state-diff emitter reads the live IAVL
+// commit store from the JSON-RPC goroutine, bypassing ABCI entirely, so it
+// takes the same mutex and never runs concurrently with block execution.
+type consensusMutexClientCreator struct {
+	mtx                *cmtsync.Mutex
+	app                abcitypes.Application
+	syncAllConnections bool
+}
+
+var _ proxy.ClientCreator = (*consensusMutexClientCreator)(nil)
+
+// NewConsensusMutexClientCreator builds the node's ABCI client creator around a
+// caller-owned mutex. Callers that stand up a node outside startInProcess (the
+// test network) pass the same mutex to StartJSONRPC, so the state-diff emitter
+// is serialized against block execution there too.
+func NewConsensusMutexClientCreator(
+	mtx *cmtsync.Mutex, app abcitypes.Application, syncAllConnections bool,
+) proxy.ClientCreator {
+	return &consensusMutexClientCreator{mtx: mtx, app: app, syncAllConnections: syncAllConnections}
+}
+
+func (c *consensusMutexClientCreator) NewABCIConsensusClient() (abcicli.Client, error) {
+	return abcicli.NewLocalClient(c.mtx, c.app), nil
+}
+
+func (c *consensusMutexClientCreator) NewABCIMempoolClient() (abcicli.Client, error) {
+	return c.newOtherClient()
+}
+
+func (c *consensusMutexClientCreator) NewABCIQueryClient() (abcicli.Client, error) {
+	return c.newOtherClient()
+}
+
+func (c *consensusMutexClientCreator) NewABCISnapshotClient() (abcicli.Client, error) {
+	return c.newOtherClient()
+}
+
+func (c *consensusMutexClientCreator) newOtherClient() (abcicli.Client, error) {
+	if c.syncAllConnections {
+		return abcicli.NewLocalClient(c.mtx, c.app), nil
+	}
+	return abcicli.NewUnsyncLocalClient(c.app), nil
+}
+
+type namedCommitMultiStore interface {
+	LatestVersion() int64
+	StoreKeysByName() map[string]storetypes.StoreKey
+}
+
+func resolveStateChangeSource(app types.Application, codec codec.Codec, abciMtx sync.Locker) (statediff.StateChangeSource, error) {
+	cms := app.CommitMultiStore()
+	named, ok := cms.(namedCommitMultiStore)
+	if !ok {
+		return nil, fmt.Errorf("trace namespace requires a named commit multi-store, got %T", cms)
+	}
+	stores := make(map[string]*iavlstore.Store, 3)
+	for _, name := range []string{"acc", "bank", "evm"} {
+		key, found := named.StoreKeysByName()[name]
+		if !found {
+			return nil, fmt.Errorf("trace namespace requires the %s store", name)
+		}
+		commitStore := cms.GetCommitKVStore(key)
+		store, found := commitStore.(*iavlstore.Store)
+		if !found {
+			return nil, fmt.Errorf("trace namespace requires a standard IAVL %s store, got %T", name, commitStore)
+		}
+		stores[name] = store
+	}
+	return statediff.NewIAVLStateChangeSource(
+		abciMtx, named, codec, stores["acc"], stores["bank"], stores["evm"],
+	), nil
+}
+
+func namespaceEnabled(namespaces []string, target string) bool {
+	for _, namespace := range namespaces {
+		if namespace == target {
+			return true
+		}
+	}
+	return false
 }
 
 func startRosettaServer(
