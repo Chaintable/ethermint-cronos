@@ -258,8 +258,8 @@ replace (
 	github.com/99designs/keyring => github.com/cosmos/keyring v1.2.0
 	// v0.38.x
 	github.com/cometbft/cometbft => github.com/crypto-org-chain/cometbft v0.0.0-20241106091515-ce418f845d9a
-	// release/v1.11.x
-	github.com/ethereum/go-ethereum => github.com/crypto-org-chain/go-ethereum v1.10.20-0.20241030073450-b9cc632bc183
+	// call-frame tracer hooks on crypto-org-chain go-ethereum d2275b4afb9a (v1.11.5), the version cronos v1.4.11 pins
+	github.com/ethereum/go-ethereum => github.com/Chaintable/go-ethereum v1.10.10-0.20261127060911-e4e6363aa274
 	// Fix upstream GHSA-h395-qcrw-5vmq vulnerability.
 	// TODO Remove it: https://github.com/cosmos/cosmos-sdk/issues/10409
 	github.com/gin-gonic/gin => github.com/gin-gonic/gin v1.7.0
