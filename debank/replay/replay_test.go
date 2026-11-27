@@ -148,6 +148,31 @@ func TestVerifyRepeatedRefundConversionEvents(t *testing.T) {
 	require.ErrorContains(t, verify(tx(nil, refund, refund), tx(nil, refund, refund, refund)), "event count")
 }
 
+// H12736432: MsgTimeout refunds archived each conversion twice before timeout_packet.
+func TestVerifyRepeatedTimeoutConversionEvents(t *testing.T) {
+	ev := func(typ, key, value string) abci.Event {
+		return abci.Event{Type: typ, Attributes: []abci.EventAttribute{{Key: []byte(key), Value: []byte(value)}}}
+	}
+	conv := []abci.Event{ev("coin_spent", "amount", "1ibc/x"), ev("coin_received", "amount", "1ibc/x"), ev("transfer", "amount", "1ibc/x"), ev("message", "sender", "a")}
+	tx := func(runs ...[]abci.Event) []abci.Event {
+		events := []abci.Event{ev("message", "action", "/ibc.core.channel.v1.MsgTimeout"), ev("timeout", "module", "transfer")}
+		for _, r := range runs {
+			events = append(events, r...)
+		}
+		return append(events, ev("timeout_packet", "packet_sequence", "1"), ev("message", "module", "ibc_channel"))
+	}
+	verify := func(archived, replayed []abci.Event) error {
+		want, got := responses(), responses()
+		got.EndBlock.ValidatorUpdates = want.EndBlock.ValidatorUpdates
+		want.DeliverTxs[0].Events, got.DeliverTxs[0].Events = archived, replayed
+		return Verify(want, got)
+	}
+	require.NoError(t, verify(tx(conv, conv), tx(conv)))
+	altered := append([]abci.Event{}, conv...)
+	altered[0] = ev("coin_spent", "amount", "2ibc/x")
+	require.ErrorContains(t, verify(tx(conv, altered), tx(conv)), "event count")
+}
+
 func TestVerifyWithdrawRewardsWithoutDelegator(t *testing.T) {
 	withdraw := func(kv ...string) abci.Event {
 		e := abci.Event{Type: "withdraw_rewards"}

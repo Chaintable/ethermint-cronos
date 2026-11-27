@@ -184,18 +184,18 @@ func Verify(want, got *tmstate.ABCIResponses) error {
 
 // withoutRepeatedConversions drops the second copy of the IBC voucher
 // conversion events that some mainnet builds archived twice (cronos #1102):
-// the run after fungible_token_packet, up to write_acknowledgement on receipt
-// or the next message on an acknowledgement or timeout refund, when it
-// consists of the same events repeated.
+// the run after fungible_token_packet (receipt, acknowledgement) or timeout
+// (timeout refund), up to write_acknowledgement, timeout_packet or the next
+// message, when it consists of the same events repeated.
 func withoutRepeatedConversions(events []abci.Event) []abci.Event {
 	out := make([]abci.Event, 0, len(events))
 	for i := 0; i < len(events); i++ {
 		out = append(out, events[i])
-		if events[i].Type != "fungible_token_packet" {
+		if events[i].Type != "fungible_token_packet" && events[i].Type != "timeout" {
 			continue
 		}
 		end := i + 1
-		for end < len(events) && events[end].Type != "write_acknowledgement" && !(events[end].Type == "message" && hasAttribute(events[end], "action")) {
+		for end < len(events) && events[end].Type != "write_acknowledgement" && events[end].Type != "timeout_packet" && !(events[end].Type == "message" && hasAttribute(events[end], "action")) {
 			end++
 		}
 		run := events[i+1 : end]
