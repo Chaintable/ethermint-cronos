@@ -117,18 +117,18 @@ func TestReplayOnlyBlocksWithEVMMessages(t *testing.T) {
 	exec := &countingExecutor{result: &replay.Result{Finalize: &abci.ResponseFinalizeBlock{AppHash: appHash}}}
 	api := &API{executor: exec}
 
-	got, err := api.replayIfNeeded(context.Background(), replay.Request{}, results, 0)
+	got, err := api.replayIfNeeded(context.Background(), replay.Request{}, results, 0, nil)
 	require.NoError(t, err)
 	require.Nil(t, got)
 	require.Zero(t, exec.calls)
 
-	got, err = api.replayIfNeeded(context.Background(), replay.Request{}, results, 1)
+	got, err = api.replayIfNeeded(context.Background(), replay.Request{}, results, 1, nil)
 	require.NoError(t, err)
 	require.Equal(t, exec.result, got)
 	require.Equal(t, 1, exec.calls)
 
 	exec.result.Finalize.AppHash = bytes.Repeat([]byte{2}, 32)
-	_, err = api.replayIfNeeded(context.Background(), replay.Request{}, results, 1)
+	_, err = api.replayIfNeeded(context.Background(), replay.Request{}, results, 1, nil)
 	require.ErrorContains(t, err, "AppHash")
 }
 

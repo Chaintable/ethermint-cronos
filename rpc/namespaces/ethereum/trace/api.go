@@ -93,7 +93,13 @@ func encodeOutput(output *dtypes.DebankOutPut) (json.RawMessage, error) {
 	})
 }
 
-func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (_ *dtypes.DebankOutPut, err error) {
+func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.BlockNumberOrHash) (*dtypes.DebankOutPut, error) {
+	return api.debankBlockRaw(ctx, blockNrOrHash, nil)
+}
+
+type replayBlockFunc func(context.Context, replay.Request) (*replay.Result, error)
+
+func (api *API) debankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.BlockNumberOrHash, run replayBlockFunc) (_ *dtypes.DebankOutPut, err error) {
 	blockHeight, err := api.backend.BlockNumberFromTendermint(blockNrOrHash)
 	if err != nil {
 		return nil, err
@@ -170,7 +176,7 @@ func (api *API) DebankBlockRaw(ctx context.Context, blockNrOrHash rpctypes.Block
 		return nil, err
 	}
 	timing.mark("request")
-	result, err := api.replayIfNeeded(ctx, req, blockRes, len(messages))
+	result, err := api.replayIfNeeded(ctx, req, blockRes, len(messages), run)
 	if err != nil {
 		return nil, err
 	}
@@ -283,11 +289,14 @@ func (p *phaseTimer) fields(prefix ...any) []any {
 // replayIfNeeded executes the block unless it has no committed EVM messages:
 // such a block yields no traces, and its block file and state diff come from
 // the block, its results and the committed state.
-func (api *API) replayIfNeeded(ctx context.Context, req replay.Request, results *ctypes.ResultBlockResults, ethMsgs int) (*replay.Result, error) {
+func (api *API) replayIfNeeded(ctx context.Context, req replay.Request, results *ctypes.ResultBlockResults, ethMsgs int, run replayBlockFunc) (*replay.Result, error) {
 	if ethMsgs == 0 {
 		return nil, nil
 	}
-	result, err := api.executor.ReplayBlock(ctx, req)
+	if run == nil {
+		run = api.executor.ReplayBlock
+	}
+	result, err := run(ctx, req)
 	if err != nil {
 		return nil, err
 	}
