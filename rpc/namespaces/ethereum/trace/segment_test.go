@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/require"
 	abci "github.com/tendermint/tendermint/abci/types"
 	"github.com/tendermint/tendermint/crypto/ed25519"
@@ -160,4 +162,26 @@ func TestDebankBlockSegmentParameters(t *testing.T) {
 	require.Error(t, seg.Validate(1))
 	seg.End, seg.ID = 1, ""
 	require.Error(t, seg.Validate(1))
+}
+
+func TestDebankBlockLostArchivedBeginBlock(t *testing.T) {
+	height := rpctypes.BlockNumber(10)
+	id := rpctypes.BlockNumberOrHash{BlockNumber: &height}
+	api, chain, executor := segmentTestAPI(t)
+	receiver := common.BytesToAddress([]byte{0x93, 0x35})
+	replayed := *chain.results
+	replayed.BeginBlock = &abci.ResponseBeginBlock{Events: []abci.Event{{Type: "coin_received", Attributes: []abci.EventAttribute{
+		{Key: []byte("receiver"), Value: []byte(sdk.AccAddress(receiver.Bytes()).String())},
+		{Key: []byte("amount"), Value: []byte("5basecro")},
+	}}}}
+	executor.result.Responses = &replayed
+
+	result, err := api.DebankBlockSegment(context.Background(), id, replay.Segment{ID: "a", Start: 10, End: 12})
+	require.NoError(t, err)
+	require.Contains(t, string(result), strings.ToLower(receiver.Hex()), "native transfer of the replayed BeginBlock")
+
+	// Archived BeginBlock events that differ from the replay are still rejected.
+	chain.results.BeginBlock = &abci.ResponseBeginBlock{Events: []abci.Event{{Type: "mint"}}}
+	_, err = api.DebankBlockSegment(context.Background(), id, replay.Segment{ID: "a", Start: 10, End: 12})
+	require.ErrorContains(t, err, "begin block")
 }

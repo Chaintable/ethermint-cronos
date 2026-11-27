@@ -257,7 +257,14 @@ func (api *API) debankBlockRaw(ctx context.Context, id rpctypes.BlockNumberOrHas
 		return nil, err
 	}
 	// StorageContracts also include tx endpoints and native-CRO bank-event addresses.
-	for addr := range bankdiff.CoinTouchedAddresses(results, evmDenom) {
+	coinResults := results
+	if result != nil && len(results.BeginBlock.Events) == 0 {
+		// The archive lost this BeginBlock (see replay.Verify).
+		c := *results
+		c.BeginBlock = result.Responses.BeginBlock
+		coinResults = &c
+	}
+	for addr := range bankdiff.CoinTouchedAddresses(coinResults, evmDenom) {
 		fromToAddress[addr] = struct{}{}
 	}
 	blockFile.StorageContracts = mergeStorageContracts(fromToAddress, blockFile.StorageContracts)

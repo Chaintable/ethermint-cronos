@@ -81,6 +81,15 @@ func TestVerify(t *testing.T) {
 	require.NoError(t, Verify(want, got))
 }
 
+func TestVerifyLostArchivedBeginBlock(t *testing.T) {
+	want, got := responses(), responses()
+	got.EndBlock.ValidatorUpdates = want.EndBlock.ValidatorUpdates
+	want.BeginBlock.Events = nil
+	require.NoError(t, Verify(want, got))
+	want.BeginBlock.Events = []abci.Event{{Type: "mint"}}
+	require.ErrorContains(t, Verify(want, got), "begin block")
+}
+
 func TestVerifyRepeatedConversionEvents(t *testing.T) {
 	ev := func(typ, value string) abci.Event {
 		return abci.Event{Type: typ, Attributes: []abci.EventAttribute{{Key: []byte("amount"), Value: []byte(value)}}}
