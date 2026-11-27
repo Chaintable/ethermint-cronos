@@ -109,6 +109,36 @@ func TestVerifyRepeatedConversionEvents(t *testing.T) {
 	require.ErrorContains(t, verify(noAck), "event count")
 }
 
+// A refund on an error acknowledgement (H10439843) or a timeout has no
+// write_acknowledgement; the run ends at the next message or the last event.
+func TestVerifyRepeatedRefundConversionEvents(t *testing.T) {
+	ev := func(typ, key, value string) abci.Event {
+		return abci.Event{Type: typ, Attributes: []abci.EventAttribute{{Key: []byte(key), Value: []byte(value)}}}
+	}
+	refund := []abci.Event{ev("coin_spent", "amount", "1ibc/x"), ev("coin_received", "amount", "1ibc/x"), ev("coinbase", "amount", "10basecro")}
+	next := ev("message", "action", "/cosmos.bank.v1beta1.MsgSend")
+	tx := func(tail []abci.Event, runs ...[]abci.Event) []abci.Event {
+		events := []abci.Event{ev("acknowledge_packet", "packet_sequence", "1"), ev("fungible_token_packet", "acknowledgement", "error"), ev("fungible_token_packet", "error", "e")}
+		for _, r := range runs {
+			events = append(events, r...)
+		}
+		return append(events, tail...)
+	}
+	verify := func(archived, replayed []abci.Event) error {
+		want, got := responses(), responses()
+		got.EndBlock.ValidatorUpdates = want.EndBlock.ValidatorUpdates
+		want.DeliverTxs[0].Events, got.DeliverTxs[0].Events = archived, replayed
+		return Verify(want, got)
+	}
+	require.NoError(t, verify(tx(nil, refund, refund), tx(nil, refund)))
+	require.NoError(t, verify(tx([]abci.Event{next}, refund, refund), tx([]abci.Event{next}, refund)))
+
+	altered := append([]abci.Event{}, refund...)
+	altered[2] = ev("coinbase", "amount", "20basecro")
+	require.ErrorContains(t, verify(tx(nil, refund, altered), tx(nil, refund)), "event count")
+	require.ErrorContains(t, verify(tx(nil, refund, refund), tx(nil, refund, refund, refund)), "event count")
+}
+
 func TestVerifyWithdrawRewardsWithoutDelegator(t *testing.T) {
 	withdraw := func(kv ...string) abci.Event {
 		e := abci.Event{Type: "withdraw_rewards"}
