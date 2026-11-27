@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -28,9 +29,12 @@ import (
 	rpcclient "github.com/cometbft/cometbft/rpc/client"
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/server"
+	servertypes "github.com/cosmos/cosmos-sdk/server/types"
 	ethlog "github.com/ethereum/go-ethereum/log"
 	ethrpc "github.com/ethereum/go-ethereum/rpc"
 	"github.com/evmos/ethermint/app/ante"
+	"github.com/evmos/ethermint/debank/replay"
+	"github.com/evmos/ethermint/debank/statediff"
 	"github.com/evmos/ethermint/rpc"
 	"github.com/evmos/ethermint/rpc/stream"
 	rpctypes "github.com/evmos/ethermint/rpc/types"
@@ -41,6 +45,7 @@ import (
 const ServerStartTime = 5 * time.Second
 
 type AppWithPendingTxStream interface {
+	servertypes.Application
 	RegisterPendingTxListener(listener ante.PendingTxListener)
 }
 
@@ -53,6 +58,7 @@ func StartJSONRPC(
 	config *config.Config,
 	indexer ethermint.EVMTxIndexer,
 	app AppWithPendingTxStream,
+	abciMtx sync.Locker,
 ) (*http.Server, error) {
 	logger := srvCtx.Logger.With("module", "geth")
 
@@ -82,8 +88,17 @@ func StartJSONRPC(
 
 	allowUnprotectedTxs := config.JSONRPC.AllowUnprotectedTxs
 	rpcAPIArr := config.JSONRPC.API
+	var stateSource statediff.StateChangeSource
+	if namespaceEnabled(rpcAPIArr, rpc.TraceNamespace) {
+		resolved, err := resolveStateChangeSource(app, clientCtx.Codec, abciMtx)
+		if err != nil {
+			return nil, err
+		}
+		stateSource = resolved
+	}
 
-	apis := rpc.GetRPCAPIs(srvCtx, clientCtx, rpcStream, allowUnprotectedTxs, indexer, rpcAPIArr)
+	executor, _ := app.(replay.Executor)
+	apis := rpc.GetRPCAPIs(srvCtx, clientCtx, rpcStream, allowUnprotectedTxs, indexer, rpcAPIArr, stateSource, executor)
 
 	for _, api := range apis {
 		if err := rpcServer.RegisterName(api.Namespace, api.Service); err != nil {

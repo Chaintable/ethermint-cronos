@@ -16,6 +16,8 @@
 package encoding
 
 import (
+	"sync"
+
 	"cosmossdk.io/x/tx/signing"
 	amino "github.com/cosmos/cosmos-sdk/codec"
 	"github.com/cosmos/cosmos-sdk/codec/address"
@@ -59,7 +61,10 @@ func MakeConfig() ethermint.EncodingConfig {
 	enccodec.RegisterLegacyAminoCodec(cdc)
 	enccodec.RegisterInterfaces(encodingConfig.InterfaceRegistry)
 	// This is needed for the EIP712 txs because currently is using
-	// the deprecated method legacytx.StdSignBytes
-	legacytx.RegressionTestingAminoCodec = cdc
+	// the deprecated method legacytx.StdSignBytes. Only the first codec is
+	// installed, so later app constructions do not race with readers.
+	setSignBytesCodecOnce.Do(func() { legacytx.RegressionTestingAminoCodec = cdc })
 	return encodingConfig
 }
+
+var setSignBytesCodecOnce sync.Once
