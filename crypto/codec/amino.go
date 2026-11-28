@@ -20,6 +20,7 @@ import (
 	"github.com/cosmos/cosmos-sdk/codec/legacy"
 	cryptocodec "github.com/cosmos/cosmos-sdk/crypto/codec"
 	"github.com/cosmos/cosmos-sdk/crypto/keyring"
+	"sync"
 
 	"github.com/evmos/ethermint/crypto/ethsecp256k1"
 )
@@ -37,5 +38,7 @@ func RegisterCrypto(cdc *codec.LegacyAmino) {
 
 	// NOTE: update SDK's amino codec to include the ethsecp256k1 keys.
 	// DO NOT REMOVE unless deprecated on the SDK.
-	legacy.Cdc = cdc
+	setGlobalCdcOnce.Do(func() { legacy.Cdc = cdc })
 }
+
+var setGlobalCdcOnce sync.Once

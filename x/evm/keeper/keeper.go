@@ -40,7 +40,12 @@ import (
 type CustomContractFn func(sdk.Context, params.Rules) vm.PrecompiledContract
 
 // Keeper grants access to the EVM module state and implements the go-ethereum StateDB interface.
+type TransactionObserver func(common.Hash) (vm.EVMLogger, func(*types.MsgEthereumTxResponse, error))
+
+func (k *Keeper) SetTransactionObserver(o TransactionObserver) { k.observer = o }
+
 type Keeper struct {
+	observer TransactionObserver
 	// Protobuf codec
 	cdc codec.BinaryCodec
 	// Store key required for the EVM Prefix KVStore. It is required by:
