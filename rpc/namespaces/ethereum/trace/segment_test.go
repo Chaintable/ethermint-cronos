@@ -10,6 +10,7 @@ import (
 	"github.com/cometbft/cometbft/crypto/ed25519"
 	"github.com/cometbft/cometbft/libs/log"
 	tmstate "github.com/cometbft/cometbft/proto/tendermint/state"
+	tmproto "github.com/cometbft/cometbft/proto/tendermint/types"
 	sm "github.com/cometbft/cometbft/state"
 	tmtypes "github.com/cometbft/cometbft/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -45,8 +46,8 @@ func (c *segmentTestChain) StoreGet(_ int64, store string, key []byte) ([]byte, 
 	return params.Marshal()
 }
 
-func (c *segmentTestChain) ConsensusParams(int64) (tmtypes.ConsensusParams, error) {
-	return *tmtypes.DefaultConsensusParams(), nil
+func (c *segmentTestChain) ConsensusParams(int64) (tmproto.ConsensusParams, error) {
+	return tmtypes.DefaultConsensusParams().ToProto(), nil
 }
 
 type segmentTestExecutor struct {
@@ -86,7 +87,7 @@ func segmentTestAPI(t *testing.T) (*API, *segmentTestChain, *segmentTestExecutor
 		DeliverTxs: []*abci.ResponseDeliverTx{{Data: msgResult(t, &evmtypes.MsgEthereumTxResponse{Hash: hash.Hex(), GasUsed: 21000}), GasUsed: 21000}},
 	}
 	root := make([]byte, 32)
-	next := &tmtypes.Header{Height: 11, LastBlockID: tmtypes.BlockID{Hash: block.Hash()}, LastResultsHash: sm.ABCIResponsesResultsHash(results), AppHash: root}
+	next := &tmtypes.Header{Height: 11, ChainID: block.ChainID, LastBlockID: tmtypes.BlockID{Hash: block.Hash()}, LastResultsHash: sm.ABCIResponsesResultsHash(results), AppHash: root}
 	chain := &segmentTestChain{resultsChain: resultsChain{
 		fakeChain: fakeChain{headers: map[int64]*tmtypes.Header{9: parent, 11: next}, vals: map[int64]*tmtypes.ValidatorSet{9: set}},
 		block:     block, results: results,
@@ -124,6 +125,7 @@ func TestDebankBlockSegmentConfirmation(t *testing.T) {
 			case "ack-failed":
 				executor.ackErr = errors.New("worker disconnected")
 			case "no-evm":
+				api.txDecoder = func([]byte) (sdk.Tx, error) { return &emptyTx{}, nil }
 				chain.results.DeliverTxs[0].Code = 5
 				chain.headers[11].LastResultsHash = sm.ABCIResponsesResultsHash(chain.results)
 			}
